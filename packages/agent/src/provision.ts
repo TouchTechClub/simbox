@@ -147,6 +147,7 @@ export function androidDirectories(env: Record<string, string | undefined>) {
 export async function configureAndroidEnvironment(): Promise<void> {
   const dirs = androidDirectories(Bun.env);
   Bun.env.ANDROID_USER_HOME = dirs.userHome;
+  Bun.env.ANDROID_EMULATOR_HOME = dirs.userHome;
   Bun.env.ANDROID_AVD_HOME = dirs.avdHome;
   await mkdir(dirs.avdHome, { recursive: true });
 }
@@ -214,8 +215,23 @@ export async function prepareAndroid(
     }
 
     // "no" answers the "custom hardware profile?" prompt.
+    const avdHome = Bun.env.ANDROID_AVD_HOME!;
+    const avdPath = join(avdHome, "simbox.avd");
     const avd = await run(
-      [avdmanager, "create", "avd", "-n", "simbox", "-k", systemImage, "-d", "pixel_6", "--force"],
+      [
+        avdmanager,
+        "create",
+        "avd",
+        "-n",
+        "simbox",
+        "--path",
+        avdPath,
+        "-k",
+        systemImage,
+        "-d",
+        "pixel_6",
+        "--force",
+      ],
       { input: "no\n", timeoutMs: 60_000 },
     );
     if (avd.code !== 0) {
@@ -223,6 +239,15 @@ export async function prepareAndroid(
       return;
     }
     for (const line of avd.stdout.split("\n")) if (line.trim()) relay("avdmanager", line);
+    if (!existsSync(join(avdPath, "config.ini"))) {
+      throw new Error(`avdmanager did not create ${avdPath}/config.ini`);
+    }
+    // Own this single Simbox registry entry explicitly; SDK generations do not
+    // consistently agree on the default location of the discovery .ini file.
+    await Bun.write(
+      join(avdHome, "simbox.ini"),
+      `avd.ini.encoding=UTF-8\npath=${avdPath}\ntarget=android-34\n`,
+    );
     const acceleration = await run([join(sdkRoot, "emulator", "emulator"), "-accel-check"], {
       timeoutMs: 15_000,
     });
@@ -248,7 +273,7 @@ export async function prepareAndroid(
         "-memory",
         "2048",
       ],
-      { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+      { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: { ...Bun.env } },
     );
     onEmulator(emulator);
     pumpLines(emulator.stdout, "android-emulator");

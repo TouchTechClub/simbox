@@ -23,7 +23,12 @@ export interface RunOptions {
 
 /** Run a command to completion, capturing output. Never throws on non-zero exit. */
 export async function run(cmd: string[], opts: RunOptions = {}): Promise<RunResult> {
-  const proc = Bun.spawn(cmd, { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn(cmd, {
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...Bun.env },
+  });
   const stdin = proc.stdin;
   if (stdin && typeof stdin === "object" && "write" in stdin) {
     if (opts.input) void stdin.write(opts.input);

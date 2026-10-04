@@ -2,7 +2,7 @@
 # Do not edit action.yml directly; edit this file and run ./release.sh to
 # re-render with the sha256 of the release tarball.
 name: simbox
-description: Boot agent-device proxy + cloudflared tunnel on this macOS runner and register it with the simbox API.
+description: Boot agent-device proxy + cloudflared tunnel on a macOS or Linux runner and register it with the simbox API.
 branding:
   icon: box
   color: purple
@@ -33,9 +33,13 @@ runs:
         SIMBOX_API_URL: ${{ inputs.api_url }}
       run: |
         set -euo pipefail
-        TARBALL=simbox-agent-darwin-arm64.tar.gz
+        case "$(uname -s)-$(uname -m)" in
+          Darwin-arm64) TARBALL=simbox-agent-darwin-arm64.tar.gz; SHA=63fc7274936179a1352960ff977478427df5593f0d77ddbfb4ac62c790af936e ;;
+          Linux-x86_64) TARBALL=simbox-agent-linux-amd64.tar.gz; SHA=54c3a4dc124cc58740664f697c87e68d5a84af9b611493c37d7e47da99a709e9 ;;
+          *) echo "Unsupported Simbox runner OS/architecture" >&2; exit 1 ;;
+        esac
         curl -fsSL "https://github.com/TouchTechClub/simbox/releases/download/${{ inputs.version }}/$TARBALL" -o "$TARBALL"
-        echo "a80e064d096c243fd12bd305da23a1568863e8047dab2b4229c871facde2c630  $TARBALL" | shasum -a 256 -c -
+        echo "$SHA  $TARBALL" | shasum -a 256 -c -
         tar xzf "$TARBALL"
         chmod +x ./simbox-agent
         ./simbox-agent

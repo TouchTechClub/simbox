@@ -1,6 +1,6 @@
 {
   "name": "@touchtechclub/simbox",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "On-demand iOS simulators & Android emulators on your own GitHub Actions minutes.",
   "repository": {
     "type": "git",

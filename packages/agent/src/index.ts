@@ -19,7 +19,12 @@ import pkg from "../package.json" with { type: "json" };
 import { addMask, error, info, warn } from "./log.js";
 import { pumpLines, setSecretFilter } from "./proc.js";
 import type { ChildProc } from "./proc.js";
-import { installAgentDevice, installCloudflared, prepareAndroid } from "./provision.js";
+import {
+  installAgentDevice,
+  installCloudflared,
+  prepareAndroid,
+  configureAndroidEnvironment,
+} from "./provision.js";
 import { ApiClient, HttpError } from "./api.js";
 import { countActiveDevices } from "./devices.js";
 import { run } from "./proc.js";
@@ -503,6 +508,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   state.ghRunId = Number(Bun.env.GITHUB_RUN_ID);
+  if (process.platform === "linux") await configureAndroidEnvironment();
   addMask(state.token); // belt-and-braces; GH already masks repo secrets
 
   // Register signal handlers early so a SIGTERM during provisioning still

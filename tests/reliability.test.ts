@@ -7,7 +7,7 @@ import { startGateway } from "../packages/agent/src/gateway.js";
 import { sessionDeviceCount } from "../packages/agent/src/devices.js";
 import { selectWarmSimulator } from "../packages/agent/src/ios.js";
 import { preparePlatforms } from "../packages/agent/src/platforms.js";
-import { androidSystemImage } from "../packages/agent/src/provision.js";
+import { androidSystemImage, androidDirectories } from "../packages/agent/src/provision.js";
 import { WORKFLOW_YAML } from "../packages/shared/src/constants.js";
 import { dispatchWorkflow } from "../apps/api/src/github.js";
 
@@ -41,6 +41,19 @@ test("Android uses the host ABI and platform-aware workflow enables Linux/KVM", 
     "inputs.platform == 'android' && 'ubuntu-latest' || 'macos-latest'",
   );
   expect(WORKFLOW_YAML).toContain("sudo chmod 666 /dev/kvm");
+});
+
+test("AVD creation and discovery share explicit directories across SDK generations", () => {
+  expect(androidDirectories({ HOME: "/home/runner" })).toEqual({
+    userHome: "/home/runner/.android",
+    avdHome: "/home/runner/.android/avd",
+  });
+  expect(
+    androidDirectories({ HOME: "/home/runner", ANDROID_USER_HOME: "/custom/android" }),
+  ).toEqual({ userHome: "/custom/android", avdHome: "/custom/android/avd" });
+  expect(
+    androidDirectories({ HOME: "/home/runner", ANDROID_AVD_HOME: "/custom/avds" }).avdHome,
+  ).toBe("/custom/avds");
 });
 
 test("workflow dispatch carries Android platform while preserving legacy iOS dispatch", async () => {

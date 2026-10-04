@@ -5,7 +5,7 @@
 import { chmod, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { PINS } from "./pins.js";
 import { endGroup, info, relay, startGroup, warn } from "./log.js";
 import { run, which, pumpLines } from "./proc.js";
@@ -138,6 +138,19 @@ export function androidSystemImage(arch: string): string {
   return PINS.androidSystemImage.replace("arm64-v8a", arch === "arm64" ? "arm64-v8a" : "x86_64");
 }
 
+export function androidDirectories(env: Record<string, string | undefined>) {
+  const userHome = env.ANDROID_USER_HOME || join(env.HOME || homedir(), ".android");
+  return { userHome, avdHome: env.ANDROID_AVD_HOME || join(userHome, "avd") };
+}
+
+/** All SDK generations/tools and the daemon must agree on AVD discovery. */
+export async function configureAndroidEnvironment(): Promise<void> {
+  const dirs = androidDirectories(Bun.env);
+  Bun.env.ANDROID_USER_HOME = dirs.userHome;
+  Bun.env.ANDROID_AVD_HOME = dirs.avdHome;
+  await mkdir(dirs.avdHome, { recursive: true });
+}
+
 /**
  * Android emulator prep — runs fully in the background. Every failure is
  * non-fatal: it only leaves `androidReady` false in heartbeats.
@@ -174,6 +187,7 @@ export async function prepareAndroid(
       return;
     }
     info(`Android SDK at ${sdkRoot}`);
+    info(`Android AVD directory: ${Bun.env.ANDROID_AVD_HOME}`);
 
     // Accept licenses — pipe plenty of "y"s so every prompt is answered.
     const lic = await run([sdkmanager, "--licenses"], {
@@ -208,6 +222,7 @@ export async function prepareAndroid(
       warn(`avdmanager create avd exited ${avd.code}: ${avd.stderr.trim().slice(0, 300)}`);
       return;
     }
+    for (const line of avd.stdout.split("\n")) if (line.trim()) relay("avdmanager", line);
     const acceleration = await run([join(sdkRoot, "emulator", "emulator"), "-accel-check"], {
       timeoutMs: 15_000,
     });

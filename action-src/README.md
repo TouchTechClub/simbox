@@ -60,7 +60,7 @@ npx @touchtechclub/simbox exec open <app> --platform ios --udid <udid-from-inven
      gateway on `127.0.0.1:4310` behind a trycloudflare tunnel,
    - registers `tunnel_url` + a per-run `daemon_token` with the API over TLS
      (`Authorization: Bearer SIMBOX_TOKEN`) — neither ever hits the logs,
-   - waits for healthy local proxy and public tunnel before registration,
+   - waits for a healthy local proxy before registration; the CLI checks public tunnel readiness,
    - heartbeats every 60s; authenticated in-flight RPCs postpone idle exit
      (each request is bounded to 10 minutes); exits after 15 min idle or 5h45m uptime (clean
      shutdown before GitHub's 6h limit → green checkmark).

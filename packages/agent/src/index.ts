@@ -280,7 +280,7 @@ async function shutdown(reason: string, code: number): Promise<never> {
 // Supervision loop
 // ---------------------------------------------------------------------------
 
-/** Restart a dead child once; second death is fatal. Returns false if fatal. */
+/** Restart dead children within their budgets. Returns false if exhausted. */
 async function handleDeadChildren(): Promise<boolean> {
   if (state.children.proxy?.dead) {
     const c = state.children.proxy;
@@ -307,7 +307,8 @@ async function handleDeadChildren(): Promise<boolean> {
       const newUrl = await t.url;
       addMask(newUrl);
       state.tunnelUrl = newUrl;
-      await waitForProxy(`${newUrl}/agent-device/health`);
+      // A runner's DNS/egress is not an authoritative test of a tunnel client
+      // can reach. The CLI validates public readiness before returning it.
       // URL changed → re-register so the API hands out the fresh tunnel.
       await register();
       info("tunnel re-registered with new URL");
@@ -334,8 +335,10 @@ async function tunnelEdgeDead(): Promise<boolean> {
     const res = await fetch(`${state.tunnelUrl}/agent-device/health`, {
       signal: AbortSignal.timeout(TUNNEL_PROBE_TIMEOUT_MS),
     });
+    if (res.status === 530) warn("tunnel probe: HTTP 530");
     return res.status === 530;
-  } catch {
+  } catch (error) {
+    warn(`tunnel probe: ${error instanceof Error ? error.name : "network error"}`);
     return true; // DNS/connect/timeout — edge can't reach us
   }
 }
@@ -545,7 +548,8 @@ async function main(): Promise<void> {
     await shutdown("no tunnel URL", 1);
   }
   addMask(state.tunnelUrl);
-  await waitForProxy(`${state.tunnelUrl}/agent-device/health`);
+  // The local origin is ready; public DNS/edge readiness is checked by the
+  // client. Hairpin probes from GH runners can fail while clients can reach it.
   info("tunnel up (url registered + masked)");
 
   // 6. Register

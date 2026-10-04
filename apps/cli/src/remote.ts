@@ -20,7 +20,8 @@ export async function waitForRemote(
 ): Promise<ConnectInfo> {
   const probe = options.probe ?? probeRemote;
   const refresh = options.refresh ?? refreshRemote;
-  const deadline = Date.now() + (options.timeoutMs ?? 90_000);
+  // Covers two supervisor heartbeat intervals plus tunnel restart/DNS time.
+  const deadline = Date.now() + (options.timeoutMs ?? 180_000);
   let info = initial;
   do {
     if (await probe(info)) return info;

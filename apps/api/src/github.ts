@@ -318,11 +318,13 @@ export async function dispatchWorkflow(
   token: string,
   fullName: string,
   ref: string,
+  platform: "ios" | "android" = "ios",
 ): Promise<void> {
   // The workflow file is addressed by path, per the REST API.
   await gh<unknown>(token, `/repos/${fullName}/actions/workflows/simbox.yml/dispatches`, {
     method: "POST",
-    body: { ref },
+    // Preserve compatibility with previously installed iOS workflows.
+    body: platform === "android" ? { ref, inputs: { platform } } : { ref },
   });
 }
 

@@ -62,6 +62,14 @@ interface CloudflaredAsset {
 
 function cloudflaredAssets(tag: string): CloudflaredAsset[] {
   const base = `https://github.com/cloudflare/cloudflared/releases/download/${tag}`;
+  if (process.platform === "linux") {
+    return [
+      {
+        url: `${base}/cloudflared-linux-${process.arch === "arm64" ? "arm64" : "amd64"}`,
+        kind: "bin",
+      },
+    ];
+  }
   // macos-latest is arm64. Older tags only shipped darwin-amd64.tgz — try
   // arm64 first, amd64 (Rosetta) as fallback; .tgz before raw binaries.
   return [
@@ -122,6 +130,10 @@ function firstExisting(candidates: Array<string | null>): string | null {
   return null;
 }
 
+export function androidSystemImage(arch: string): string {
+  return PINS.androidSystemImage.replace("arm64-v8a", arch === "arm64" ? "arm64-v8a" : "x86_64");
+}
+
 /**
  * Android emulator prep — runs fully in the background. Every failure is
  * non-fatal: it only leaves `androidReady` false in heartbeats.
@@ -132,6 +144,12 @@ export async function prepareAndroid(
 ): Promise<void> {
   startGroup("Android emulator prep");
   try {
+    if (process.platform === "darwin") {
+      info(
+        "Android emulation on hosted ARM Macs is unsupported (HVF); start `simbox sim --new --platform android` for Linux/KVM",
+      );
+      return;
+    }
     const sdkRoot = firstExisting([Bun.env.ANDROID_HOME ?? null, Bun.env.ANDROID_SDK_ROOT ?? null]);
     if (!sdkRoot) {
       warn("no ANDROID_HOME/ANDROID_SDK_ROOT — Android emulator unavailable this run");
@@ -162,7 +180,8 @@ export async function prepareAndroid(
 
     // An AVD/system image alone is not runnable: install the emulator executable
     // too instead of relying on whatever happens to be in the hosted image.
-    const pkgs = ["platform-tools", "emulator", PINS.androidPlatform, PINS.androidSystemImage];
+    const systemImage = androidSystemImage(process.arch);
+    const pkgs = ["platform-tools", "emulator", PINS.androidPlatform, systemImage];
     info(`sdkmanager ${pkgs.join(" ")}`);
     const inst = await run([sdkmanager, ...pkgs], {
       input: "y\n".repeat(16),
@@ -178,18 +197,7 @@ export async function prepareAndroid(
 
     // "no" answers the "custom hardware profile?" prompt.
     const avd = await run(
-      [
-        avdmanager,
-        "create",
-        "avd",
-        "-n",
-        "simbox",
-        "-k",
-        PINS.androidSystemImage,
-        "-d",
-        "pixel_6",
-        "--force",
-      ],
+      [avdmanager, "create", "avd", "-n", "simbox", "-k", systemImage, "-d", "pixel_6", "--force"],
       { input: "no\n", timeoutMs: 60_000 },
     );
     if (avd.code !== 0) {

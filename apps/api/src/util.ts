@@ -105,6 +105,7 @@ export function toPublicRun(row: RunRow): PublicRun {
     id: row.id,
     ghRunId: row.gh_run_id,
     state: row.state,
+    platform: row.platform,
     tunnelUrl: row.tunnel_url,
     daemonToken: row.daemon_token,
     activeDevices: row.active_devices,

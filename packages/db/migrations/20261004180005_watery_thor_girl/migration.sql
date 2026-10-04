@@ -1,0 +1,1 @@
+ALTER TABLE `runs` ADD `platform` text DEFAULT 'ios' NOT NULL;

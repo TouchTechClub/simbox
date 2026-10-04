@@ -116,6 +116,13 @@ agent-device global/proxy profiles). Cold startup gets a 300000 ms budget.
 Clients should use `agent-device@0.21.20`, matching the runner pin. Existing
 runs keep the old agent until stopped/recreated after a release.
 
+Android testing uses `simbox sim --platform android --new`: the repaired workflow
+dispatches `ubuntu-latest`, grants `/dev/kvm` access, and downloads the sha256-pinned
+Linux x64 agent. iOS defaults to macOS ARM64. Run `simbox repair` after upgrading
+to install the new `workflow_dispatch.platform` input; the API rejects reuse of
+an active run for the wrong explicitly requested platform. Android readiness
+now requires `sys.boot_completed=1`, not merely AVD creation.
+
 ---
 
 ## 5. Action repo + agent release

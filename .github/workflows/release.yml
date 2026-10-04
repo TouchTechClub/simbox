@@ -84,9 +84,13 @@ jobs:
           cp packages/agent/dist/simbox-agent-darwin-arm64 ./simbox-agent
           tar czf simbox-agent-darwin-arm64.tar.gz simbox-agent
           echo "sha256=$(shasum -a 256 simbox-agent-darwin-arm64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          cp packages/agent/dist/simbox-agent-linux-amd64 ./simbox-agent
+          tar czf simbox-agent-linux-amd64.tar.gz simbox-agent
+          echo "sha256_linux=$(shasum -a 256 simbox-agent-linux-amd64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - name: Render action.yml with pinned sha
         run: |
-          sed "s/{{SHA256}}/${{ steps.pkg.outputs.sha256 }}/" \
+          sed -e "s/{{SHA256}}/${{ steps.pkg.outputs.sha256 }}/" \
+            -e "s/{{SHA256_LINUX}}/${{ steps.pkg.outputs.sha256_linux }}/" \
             action-src/action.yml.template > action-src/action.yml
           cp action-src/action.yml runner-action.yml
       - name: Upload tarball to GitHub Release
@@ -94,12 +98,12 @@ jobs:
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
               --title "simbox $TAG" --generate-notes
-          gh release upload "$TAG" simbox-agent-darwin-arm64.tar.gz \
+          gh release upload "$TAG" simbox-agent-darwin-arm64.tar.gz simbox-agent-linux-amd64.tar.gz \
             --repo "$GITHUB_REPOSITORY" --clobber
           # action.yml's `version` input defaults to v1 — the rolling release
           # users actually download from. Keep its tarball in lockstep with
           # the sha256 embedded in action.yml or every run fails the checksum.
-          gh release upload v1 simbox-agent-darwin-arm64.tar.gz \
+          gh release upload v1 simbox-agent-darwin-arm64.tar.gz simbox-agent-linux-amd64.tar.gz \
             --repo "$GITHUB_REPOSITORY" --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

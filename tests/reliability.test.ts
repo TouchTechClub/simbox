@@ -7,6 +7,9 @@ import { startGateway } from "../packages/agent/src/gateway.js";
 import { sessionDeviceCount } from "../packages/agent/src/devices.js";
 import { selectWarmSimulator } from "../packages/agent/src/ios.js";
 import { preparePlatforms } from "../packages/agent/src/platforms.js";
+import { androidSystemImage } from "../packages/agent/src/provision.js";
+import { WORKFLOW_YAML } from "../packages/shared/src/constants.js";
+import { dispatchWorkflow } from "../apps/api/src/github.js";
 
 const info = {
   runId: "run-1",
@@ -28,6 +31,32 @@ test("default Android preparation never invokes iOS inventory", async () => {
     warn: () => {},
   });
   expect(android).toBe(true);
+});
+
+test("Android uses the host ABI and platform-aware workflow enables Linux/KVM", () => {
+  expect(androidSystemImage("x64")).toBe("system-images;android-34;google_apis;x86_64");
+  expect(androidSystemImage("arm64")).toBe("system-images;android-34;google_apis;arm64-v8a");
+  expect(WORKFLOW_YAML).toContain("options: [ios, android]");
+  expect(WORKFLOW_YAML).toContain(
+    "inputs.platform == 'android' && 'ubuntu-latest' || 'macos-latest'",
+  );
+  expect(WORKFLOW_YAML).toContain("sudo chmod 666 /dev/kvm");
+});
+
+test("workflow dispatch carries Android platform while preserving legacy iOS dispatch", async () => {
+  const original = globalThis.fetch;
+  const bodies: unknown[] = [];
+  globalThis.fetch = (async (_url: unknown, init: RequestInit) => {
+    bodies.push(JSON.parse(init.body as string));
+    return new Response(null, { status: 204 });
+  }) as typeof fetch;
+  try {
+    await dispatchWorkflow("test", "owner/repo", "main", "android");
+    await dispatchWorkflow("test", "owner/repo", "main");
+    expect(bodies).toEqual([{ ref: "main", inputs: { platform: "android" } }, { ref: "main" }]);
+  } finally {
+    globalThis.fetch = original;
+  }
 });
 
 test("even explicitly enabled iOS warmup failures cannot block Android", async () => {
@@ -58,6 +87,11 @@ test("Android commands wait for AVD readiness without sending device commands", 
   await expect(waitForAndroid("test", { read: async () => null })).rejects.toThrow(
     "ended or was replaced",
   );
+  await expect(
+    waitForAndroid("test", {
+      read: async () => ({ id: "test", state: "live", platform: "ios" }) as any,
+    }),
+  ).rejects.toThrow("Linux/KVM");
   await expect(
     waitForAndroid("test", {
       read: async () => ({ id: "test", state: "live", androidReady: false }) as any,

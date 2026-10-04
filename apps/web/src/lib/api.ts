@@ -161,6 +161,7 @@ function normalizeRun(raw: unknown): PublicRun | null {
     id: str(r.id),
     ghRunId: (r.ghRunId ?? r.gh_run_id ?? null) as number | null,
     state: str(r.state) as PublicRun["state"],
+    platform: r.platform === "android" ? "android" : "ios",
     tunnelUrl: (r.tunnelUrl ?? r.tunnel_url ?? null) as string | null,
     daemonToken: (r.daemonToken ?? r.daemon_token ?? null) as string | null,
     activeDevices: num(r.activeDevices ?? r.active_devices),

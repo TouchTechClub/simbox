@@ -29,12 +29,23 @@ export const WORKFLOW_YAML = `name: simbox
 
 on:
   workflow_dispatch:
+    inputs:
+      platform:
+        type: choice
+        options: [ios, android]
+        default: ios
+        description: Device platform (Android uses Linux/KVM)
 
 jobs:
   simbox:
-    runs-on: macos-latest
+    runs-on: \${{ inputs.platform == 'android' && 'ubuntu-latest' || 'macos-latest' }}
     timeout-minutes: 350
     steps:
+      - name: Enable Android KVM access
+        if: \${{ inputs.platform == 'android' }}
+        run: |
+          test -e /dev/kvm || { echo "KVM is required for Android" >&2; exit 1; }
+          sudo chmod 666 /dev/kvm
       - name: Simbox agent
         uses: TouchTechClub/runner@v1
         with:

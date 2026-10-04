@@ -545,7 +545,7 @@ async function main(): Promise<void> {
   // Platform preparation must not gate tunnel registration. iOS warmup is
   // explicitly opt-in, and even its failure cannot skip Android provisioning.
   void preparePlatforms({
-    warmIOS: Bun.env.SIMBOX_WARM_IOS === "true",
+    warmIOS: process.platform === "darwin" && Bun.env.SIMBOX_WARM_IOS === "true",
     ios: () => prepareIOS(state.agentDeviceBin),
     android: () =>
       prepareAndroid(

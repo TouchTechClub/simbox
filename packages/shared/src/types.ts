@@ -39,6 +39,7 @@ export interface PublicRun {
   id: string;
   ghRunId: number | null;
   state: RunState;
+  platform: "ios" | "android";
   tunnelUrl: string | null;
   daemonToken: string | null;
   activeDevices: number;
@@ -63,6 +64,7 @@ export interface RunSummary {
 
 export interface EnsureRunRequest {
   new?: boolean;
+  platform?: "ios" | "android";
 }
 
 export type EnsureRunResponse =

@@ -18,12 +18,20 @@ This step is normally installed for you (`simbox init` commits
 name: simbox
 on:
   workflow_dispatch:
+    inputs:
+      platform:
+        type: choice
+        options: [ios, android]
+        default: ios
 
 jobs:
   simbox:
-    runs-on: macos-latest
+    runs-on: ${{ inputs.platform == 'android' && 'ubuntu-latest' || 'macos-latest' }}
     timeout-minutes: 350
     steps:
+      - name: Enable KVM
+        if: ${{ inputs.platform == 'android' }}
+        run: sudo chmod 666 /dev/kvm
       - name: Simbox agent
         uses: TouchTechClub/runner@v1
         with:
@@ -39,23 +47,30 @@ npx @touchtechclub/simbox exec devices
 npx @touchtechclub/simbox exec open <app> --platform ios --udid <udid-from-inventory>
 ```
 
+For Android, run `simbox repair` once after upgrading, then
+`simbox sim --new --platform android --json`. This selects Linux/KVM and waits
+for the headless emulator to finish booting; hosted ARM Macs cannot initialize
+HVF for Android. Control it with `simbox exec open com.android.settings --platform
+android --device simbox`, followed by `simbox exec snapshot -i`.
+
 ## Inputs
 
-| Input     | Required | Default                             | Description                                  |
-| --------- | -------- | ----------------------------------- | -------------------------------------------- |
-| `token`   | yes      | —                                   | `SIMBOX_TOKEN` repo secret                   |
-| `api_url` | no       | `https://api.simbox.touchtech.club` | API base URL (staging override)              |
-| `version` | no       | `v1`                                | Release tag of the agent tarball to download |
+| Input      | Required | Default                             | Description                                      |
+| ---------- | -------- | ----------------------------------- | ------------------------------------------------ |
+| `token`    | yes      | —                                   | `SIMBOX_TOKEN` repo secret                       |
+| `api_url`  | no       | `https://api.simbox.touchtech.club` | API base URL (staging override)                  |
+| `version`  | no       | `v1`                                | Release tag of the agent tarball to download     |
+| `warm_ios` | no       | `false`                             | Best-effort iOS prewarming; never blocks Android |
 
 ## What the step does
 
-1. Downloads `simbox-agent-darwin-arm64.tar.gz` from the pinned
+1. Downloads `simbox-agent-darwin-arm64.tar.gz` or `simbox-agent-linux-amd64.tar.gz` from the pinned
    `TouchTechClub/simbox` GitHub release (`version` input).
 2. Verifies its sha256 against the digest embedded in this `action.yml`
    (`shasum -a 256 -c`) — fails the job on mismatch.
 3. Untars and runs `simbox-agent`, which:
    - installs `agent-device` + `cloudflared` (versions pinned in the binary),
-   - preps an Android AVD in the background (`android_ready` in heartbeats),
+   - on Linux, installs and headlessly boots the Android AVD (`android_ready` requires boot completion),
    - optionally prewarms iOS (`warm_ios: "true"`); failures never block Android,
    - starts `agent-device proxy` on `127.0.0.1:4311`, with an activity-aware
      gateway on `127.0.0.1:4310` behind a trycloudflare tunnel,

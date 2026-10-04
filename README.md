@@ -41,12 +41,18 @@ action's `warm_ios: "true"` input. Warmup failures are warnings, not fatal run
 failures. The generated workflow uses stable `macos-latest`; preview-only device
 types require opting into `xcode-27` in your repository's workflow.
 
+Android requires **Linux/KVM**: GitHub's ARM macOS VMs cannot initialize HVF
+for the emulator, even when `-accel-check` reports success. Update the CLI and
+run `simbox repair` once to install the platform-aware workflow. Then start
+with `simbox sim --platform android` (use `--new` to replace an existing run).
+Without a platform flag, new runs still default to iOS/macOS.
+
 Android AVD preparation runs in the background. `simbox exec ... --platform
 android` waits for it before sending commands. `android_ready: yes` means the
 SDK/emulator executable and AVD are installed **and the emulator has completed boot**:
 
 ```bash
-simbox sim --new --json
+simbox sim --new --platform android --json
 simbox exec boot --platform android --device simbox --headless
 simbox exec open com.android.settings --platform android --device simbox
 simbox exec snapshot -i

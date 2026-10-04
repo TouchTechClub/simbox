@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import pc from "picocolors";
 import { createRequire } from "node:module";
 import { friendlyError } from "./client.js";
@@ -33,8 +33,14 @@ program
   .command("sim")
   .description("Ensure a run and its tunnel are ready for device commands")
   .option("--new", "force a fresh run even if one is live")
+  .addOption(
+    new Option("--platform <platform>", "ios: macOS runner; android: Linux/KVM runner").choices([
+      "ios",
+      "android",
+    ]),
+  )
   .option("--json", "print {tunnel_url, daemon_token, run_id, expires_at} as JSON only")
-  .action((opts: { new?: boolean; json?: boolean }) => {
+  .action((opts: { new?: boolean; json?: boolean; platform?: "ios" | "android" }) => {
     requireToken();
     return run(cmdSim(opts));
   });

@@ -17,7 +17,7 @@ import { authPath, saveToken, webBaseUrl } from "./config.js";
 import { connectFlow, type ConnectInfo } from "./connect.js";
 import { openInBrowser } from "./open.js";
 import { fmtCountdown, sleep, Spinner } from "./util.js";
-import { waitForRemote } from "./remote.js";
+import { waitForRemote, waitForAndroid } from "./remote.js";
 
 // ---- login ----
 
@@ -140,11 +140,15 @@ function printRepoConnected(repo: {
 const SIM_TIMEOUT_MS = 12 * 60 * 1000;
 const SIM_POLL_MS = 3000;
 
-export async function cmdSim(opts: { new?: boolean; json?: boolean }): Promise<void> {
+export async function cmdSim(opts: {
+  new?: boolean;
+  json?: boolean;
+  platform?: "ios" | "android";
+}): Promise<void> {
   const json = opts.json === true;
   const out = json ? process.stderr : process.stdout;
 
-  const first = await ensureRun(opts.new === true);
+  const first = await ensureRun(opts.new === true, opts.platform);
 
   let info: ConnectInfo;
   if (first.state === "live") {
@@ -202,6 +206,7 @@ export async function cmdSim(opts: { new?: boolean; json?: boolean }): Promise<v
   }
 
   info = await waitForRemote(info);
+  if (opts.platform === "android") await waitForAndroid(info.runId);
 
   if (json) {
     const payload = {
@@ -234,6 +239,7 @@ export async function cmdPs(): Promise<void> {
   const stateColor = run.state === "live" ? pc.green : run.state === "failed" ? pc.red : pc.yellow;
   console.log(`${pc.bold("run")} ${run.id}`);
   console.log(`  state:          ${stateColor(run.state)}`);
+  console.log(`  platform:       ${run.platform}`);
   console.log(`  gh_run_id:      ${run.ghRunId ?? pc.dim("pending")}`);
   console.log(`  active_devices: ${run.activeDevices}`);
   console.log(`  android_ready:  ${run.androidReady ? "yes" : "no"}`);

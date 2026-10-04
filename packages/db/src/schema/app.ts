@@ -44,6 +44,7 @@ export const runs = sqliteTable(
     repo_full_name: text("repo_full_name").notNull(),
     gh_run_id: integer("gh_run_id").unique(),
     state: text("state").$type<RunState>().notNull().default("dispatching"),
+    platform: text("platform").$type<"ios" | "android">().notNull().default("ios"),
     tunnel_url: text("tunnel_url"),
     daemon_token: text("daemon_token"),
     active_devices: integer("active_devices").notNull().default(0),

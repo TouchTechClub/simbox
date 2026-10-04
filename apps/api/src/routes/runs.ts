@@ -163,6 +163,10 @@ runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
   const db = createDb(c.env);
   const body = await c.req.json<EnsureRunRequest>().catch(() => ({}) as EnsureRunRequest);
   const wantNew = body.new === true;
+  if (body.platform !== undefined && body.platform !== "ios" && body.platform !== "android") {
+    return apiError(c, 400, "invalid_platform", "platform must be ios or android.");
+  }
+  const platform = body.platform ?? "ios";
 
   const repo = await getRepoForUser(db, user.id);
   if (!repo) return apiError(c, 404, "no_repo", "Connect a repo first (dashboard onboarding).");
@@ -182,6 +186,14 @@ runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
 
   if (active && !isTerminal(active.state)) {
     if (!wantNew) {
+      if (body.platform && body.platform !== active.platform) {
+        return apiError(
+          c,
+          409,
+          "platform_mismatch",
+          "The active run uses a different platform. Use `simbox sim --new --platform android` (or ios) to replace it.",
+        );
+      }
       if (active.state === "live") {
         if (active.active_devices >= MAX_DEVICES_PER_RUN) {
           return c.json(
@@ -241,8 +253,16 @@ runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
   try {
     const now = nowSeconds();
     try {
-      await dispatchWorkflow(instToken, repo.full_name, repo.default_branch);
+      await dispatchWorkflow(instToken, repo.full_name, repo.default_branch, platform);
     } catch (e) {
+      if (e instanceof GithubApiError && e.status === 422 && platform === "android") {
+        return apiError(
+          c,
+          409,
+          "workflow_needs_repair",
+          "Run `simbox repair` to install the platform-aware workflow, then retry `simbox sim --new --platform android`.",
+        );
+      }
       if (e instanceof GithubApiError && (e.status === 404 || e.status === 410)) {
         // Actions disabled or workflow file missing → needs_repair (plan §11).
         await db
@@ -269,6 +289,7 @@ runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
       repo_full_name: repo.full_name,
       gh_run_id: ghRunId,
       state: ghRunId ? "queued" : "dispatching",
+      platform,
       created_at: now,
       dispatched_at: now,
       expires_at: now + HARD_EXIT_MINUTES * 60,

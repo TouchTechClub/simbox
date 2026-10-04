@@ -24,6 +24,11 @@ export async function waitForAndroid(
         "The run ended or was replaced while preparing Android. Run `simbox sim` again.",
       );
     }
+    if (run.platform === "ios") {
+      throw new CliError(
+        "Android needs a Linux/KVM run. Run `simbox repair`, then `simbox sim --new --platform android`.",
+      );
+    }
     if (run.androidReady) return;
     await (options.pause?.() ?? sleep(3000));
   } while (Date.now() < deadline);

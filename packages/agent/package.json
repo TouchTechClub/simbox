@@ -4,7 +4,7 @@
   "description": "simbox-agent — in-runner agent that boots agent-device proxy + cloudflared tunnel on a GitHub Actions macOS runner",
   "type": "module",
   "scripts": {
-    "build": "bun build --compile --target=bun-darwin-arm64 --minify src/index.ts --outfile dist/simbox-agent-darwin-arm64",
+    "build": "bun build --compile --target=bun-darwin-arm64 --minify src/index.ts --outfile dist/simbox-agent-darwin-arm64 && bun build --compile --target=bun-linux-x64 --minify src/index.ts --outfile dist/simbox-agent-linux-amd64",
     "typecheck": "tsc --noEmit",
     "start": "bun src/index.ts"
   },

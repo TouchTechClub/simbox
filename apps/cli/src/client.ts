@@ -159,8 +159,8 @@ export const repairRepo = () =>
     method: "POST",
   });
 
-export const ensureRun = (fresh: boolean) =>
-  api<EnsureRunResponse>("/v1/runs/ensure", { method: "POST", body: { new: fresh } });
+export const ensureRun = (fresh: boolean, platform?: "ios" | "android") =>
+  api<EnsureRunResponse>("/v1/runs/ensure", { method: "POST", body: { new: fresh, platform } });
 
 /** null when the user has no active/recent run. API wraps: {run: PublicRun | null}. */
 export async function currentRun(): Promise<PublicRun | null> {

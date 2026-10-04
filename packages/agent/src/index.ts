@@ -583,6 +583,9 @@ async function main(): Promise<void> {
   await supervise();
 }
 
+// A long-lived service must not exit cleanly while startup awaits an unref'ed
+// network/file operation (notably streamed downloads in compiled Linux Bun).
+setInterval(() => {}, 10_000);
 main().catch(async (err) => {
   error(`fatal: ${String(err).slice(0, 500)}`);
   await shutdown("fatal boot error", 1);

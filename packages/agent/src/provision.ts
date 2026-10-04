@@ -100,16 +100,20 @@ export async function installCloudflared(): Promise<string> {
           info(`  → HTTP ${res.status}, trying next asset`);
           continue;
         }
+        // Consume the download before handing bytes to filesystem I/O. Passing
+        // a network Response directly to Bun.write can leave compiled Linux
+        // agents with no referenced event-loop work while the body is pending.
+        const bytes = new Uint8Array(await res.arrayBuffer());
         if (asset.kind === "tgz") {
           const file = join(dir, "cloudflared.tgz");
-          await Bun.write(file, res);
+          await Bun.write(file, bytes);
           const untar = await run(["tar", "xzf", file, "-C", dir], { timeoutMs: 60_000 });
           if (untar.code !== 0 || !existsSync(dest)) {
             info(`  → untar failed (${untar.stderr.trim().slice(0, 200)}), trying next asset`);
             continue;
           }
         } else {
-          await Bun.write(dest, res);
+          await Bun.write(dest, bytes);
         }
         await chmod(dest, 0o755);
         info(`cloudflared ${tag} ready at ${dest}`);

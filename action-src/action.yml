@@ -7,6 +7,10 @@ branding:
   icon: box
   color: purple
 inputs:
+  warm_ios:
+    description: Optional best-effort iOS prewarming. Leave false for Android-only runs.
+    required: false
+    default: "false"
   token:
     description: SIMBOX_TOKEN repo secret, provisioned by simbox init.
     required: true
@@ -24,13 +28,14 @@ runs:
     - name: Run simbox-agent
       shell: bash
       env:
+        SIMBOX_WARM_IOS: ${{ inputs.warm_ios }}
         SIMBOX_TOKEN: ${{ inputs.token }}
         SIMBOX_API_URL: ${{ inputs.api_url }}
       run: |
         set -euo pipefail
         TARBALL=simbox-agent-darwin-arm64.tar.gz
         curl -fsSL "https://github.com/TouchTechClub/simbox/releases/download/${{ inputs.version }}/$TARBALL" -o "$TARBALL"
-        echo "dcbf45f1e7c82bf2cb66bfe49519625c00412b409a1a8b18729d9c17311b3cb9  $TARBALL" | shasum -a 256 -c -
+        echo "27ffdb15ce14c001018d9784dda7dbb17a517f702818bad430124c46c75a50d5  $TARBALL" | shasum -a 256 -c -
         tar xzf "$TARBALL"
         chmod +x ./simbox-agent
         ./simbox-agent

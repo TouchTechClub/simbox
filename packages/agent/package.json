@@ -1,6 +1,6 @@
 {
   "name": "@simbox/agent",
-  "version": "0.1.0",
+  "version": "0.2.6",
   "description": "simbox-agent — in-runner agent that boots agent-device proxy + cloudflared tunnel on a GitHub Actions macOS runner",
   "type": "module",
   "scripts": {

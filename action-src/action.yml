@@ -30,7 +30,7 @@ runs:
         set -euo pipefail
         TARBALL=simbox-agent-darwin-arm64.tar.gz
         curl -fsSL "https://github.com/TouchTechClub/simbox/releases/download/${{ inputs.version }}/$TARBALL" -o "$TARBALL"
-        echo "cd1e3b1780c4abb6ed2a8a47baa2b8189ee40b41c5d5fccd94d271a4bf5dcef6  $TARBALL" | shasum -a 256 -c -
+        echo "572089fd6ad22b3f2f685806f46125d4f2f9d7a26041db5f86fec3553e7accd3  $TARBALL" | shasum -a 256 -c -
         tar xzf "$TARBALL"
         chmod +x ./simbox-agent
         ./simbox-agent

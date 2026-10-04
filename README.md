@@ -32,6 +32,9 @@ Cold `open`/`boot`/`prepare` commands get a five-minute startup budget; override
 with `--timeout <ms>`. To use several sessions/devices, pass `--session <name>`
 consistently to each command. Simbox never automatically replays device actions
 after a transport failure: inspect with `simbox exec session list` first.
+The runner streams JSON whitespace keepalives during RPCs so a cold boot does
+not hit Cloudflare's idle-response timeout. Startup progress is buffered; the
+final command result is returned when ready.
 
 Direct `agent-device` clients remain supported via the exports printed by
 `simbox sim`, but must refresh those exports after a tunnel change. Simbox does

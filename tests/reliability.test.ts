@@ -98,6 +98,98 @@ async function listen(server: Server): Promise<void> {
 }
 
 describe("runner activity gateway", () => {
+  test("long RPCs stream JSON whitespace keepalives before the final response", async () => {
+    let calls = 0;
+    let forwarded: any;
+    const result = {
+      jsonrpc: "2.0",
+      id: "cold-open",
+      result: { ok: true, data: { opened: true } },
+    };
+    const upstream = createServer((req, res) => {
+      calls++;
+      let text = "";
+      req.on("data", (chunk) => {
+        text += chunk;
+      });
+      req.on("end", () => {
+        forwarded = JSON.parse(text);
+        setTimeout(() => {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify(result));
+        }, 100);
+      });
+    });
+    await listen(upstream);
+    const gateway = startGateway({
+      port: 0,
+      upstreamPort: port(upstream),
+      token: "secret",
+      heartbeatMs: 10,
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${gateway.server.port}/agent-device/rpc`, {
+        method: "POST",
+        headers: { Authorization: "Bearer secret", "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "cold-open",
+          method: "agent_device.command",
+          params: { command: "open", meta: { requestProgress: "command", requestId: "request-1" } },
+        }),
+      });
+      const reader = response.body!.getReader();
+      const first = await reader.read();
+      expect(new TextDecoder().decode(first.value).trim()).toBe("");
+      expect(gateway.activity().inFlight).toBe(1);
+      let text = new TextDecoder().decode(first.value);
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        text += new TextDecoder().decode(chunk.value);
+      }
+      expect(JSON.parse(text)).toEqual(result);
+      expect(text.match(/ \n/g)!.length).toBeGreaterThan(1);
+      expect(forwarded.params.meta).toEqual({ requestId: "request-1" });
+      expect(calls).toBe(1);
+      expect(gateway.activity().inFlight).toBe(0);
+    } finally {
+      await gateway.server.stop(true);
+      upstream.closeAllConnections();
+      upstream.close();
+    }
+  });
+  test("streamed RPC deadline returns valid JSON-RPC instead of whitespace/HTML", async () => {
+    const upstream = createServer(() => {});
+    await listen(upstream);
+    const gateway = startGateway({
+      port: 0,
+      upstreamPort: port(upstream),
+      token: "secret",
+      requestTimeoutMs: 30,
+      heartbeatMs: 5,
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${gateway.server.port}/agent-device/rpc`, {
+        method: "POST",
+        headers: { Authorization: "Bearer secret" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "timeout",
+          method: "agent_device.command",
+          params: { command: "open" },
+        }),
+      });
+      const body = (await response.json()) as { id: string; error: { code: number } };
+      expect(body.id).toBe("timeout");
+      expect(body.error.code).toBe(-32000);
+      expect(gateway.activity().inFlight).toBe(0);
+    } finally {
+      await gateway.server.stop(true);
+      upstream.closeAllConnections();
+      upstream.close();
+    }
+  });
   test("a hung request has a deadline and cannot suppress idle shutdown forever", async () => {
     const upstream = createServer(() => {});
     await listen(upstream);
@@ -188,7 +280,7 @@ describe("runner activity gateway", () => {
         const req = request('http://127.0.0.1:${gateway.server.port}/agent-device/rpc', {
           method: 'POST', headers: { Authorization: 'Bearer secret' }
         });
-        req.on('error', () => {}); req.end('{}');
+        req.on('error', () => {}); req.end(JSON.stringify({ jsonrpc: '2.0', id: 'cancel', method: 'agent_device.command', params: { command: 'open' } }));
       `,
         ],
         { stdout: "ignore", stderr: "ignore" },

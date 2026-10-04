@@ -34,8 +34,8 @@ runs:
       run: |
         set -euo pipefail
         case "$(uname -s)-$(uname -m)" in
-          Darwin-arm64) TARBALL=simbox-agent-darwin-arm64.tar.gz; SHA=63fc7274936179a1352960ff977478427df5593f0d77ddbfb4ac62c790af936e ;;
-          Linux-x86_64) TARBALL=simbox-agent-linux-amd64.tar.gz; SHA=54c3a4dc124cc58740664f697c87e68d5a84af9b611493c37d7e47da99a709e9 ;;
+          Darwin-arm64) TARBALL=simbox-agent-darwin-arm64.tar.gz; SHA=83606a6067b2d21fc19b2570172f48ec2eb1d6c8435c563ffc4c567dfe40aff5 ;;
+          Linux-x86_64) TARBALL=simbox-agent-linux-amd64.tar.gz; SHA=2c69296ae3aecd22c14f3fbdc4aa850713d13402f5848b6fb5b4ab9cd60a3590 ;;
           *) echo "Unsupported Simbox runner OS/architecture" >&2; exit 1 ;;
         esac
         curl -fsSL "https://github.com/TouchTechClub/simbox/releases/download/${{ inputs.version }}/$TARBALL" -o "$TARBALL"

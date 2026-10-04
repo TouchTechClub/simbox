@@ -25,6 +25,7 @@ import { countActiveDevices } from "./devices.js";
 import { run } from "./proc.js";
 import { startGateway } from "./gateway.js";
 import { healthyProxy, waitForProxy } from "./health.js";
+import { prepareIOS } from "./ios.js";
 
 const TUNNEL_URL_TIMEOUT_MS = 60_000;
 const TUNNEL_URL_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
@@ -263,7 +264,7 @@ async function shutdown(reason: string, code: number): Promise<never> {
   if (state.shuttingDown) process.exit(code);
   state.shuttingDown = true;
   info(`shutting down: ${reason}`);
-  if (state.registered) {
+  if (state.ghRunId > 0 && state.token) {
     try {
       await api().deregister({ ghRunId: state.ghRunId, reason });
     } catch (err) {
@@ -434,8 +435,11 @@ async function supervise(): Promise<never> {
     }
 
     // --- device count ---
-    const activeDevices = await countActiveDevices();
-    if (activeDevices > 0) lastDeviceSeenAt = Date.now();
+    const deviceCount = await countActiveDevices(UPSTREAM_PORT, state.daemonToken);
+    // Unknown inventory is not evidence that a session is idle. Hard exit
+    // remains authoritative even if inventory is unavailable.
+    if (deviceCount === null || deviceCount > 0) lastDeviceSeenAt = Date.now();
+    const activeDevices = deviceCount ?? 0;
     // A request can start while probes/device inventory are awaited.
     const latestActivity = state.gateway?.activity();
     busy = (latestActivity?.inFlight ?? 0) > 0;
@@ -510,9 +514,6 @@ async function main(): Promise<void> {
   // 2. Provision: agent-device + cloudflared in parallel; Android prep runs
   // fully in the background and must never block iOS bring-up (it handles all
   // its own errors internally).
-  void prepareAndroid(() => {
-    state.androidReady = true;
-  });
   const [agentDeviceBin, cloudflaredBin] = await Promise.all([
     installAgentDevice(),
     installCloudflared(),
@@ -537,6 +538,13 @@ async function main(): Promise<void> {
   await state.gateway.ready;
   await waitForProxy(`http://127.0.0.1:${PROXY_PORT}/agent-device/health`);
   info(`agent-device gateway on 127.0.0.1:${PROXY_PORT} (pid ${state.children.proxy.proc.pid})`);
+
+  if (Bun.env.SIMBOX_WARM_IOS !== "false") await prepareIOS(state.agentDeviceBin);
+  // Don't compete with the first iOS boot for CPU/disk on small hosted Macs.
+  // Android preparation is still non-blocking once iOS infrastructure is ready.
+  void prepareAndroid(() => {
+    state.androidReady = true;
+  });
 
   // 5. cloudflared quick tunnel — wait for the URL.
   const tunnel = spawnTunnel();

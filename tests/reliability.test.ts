@@ -4,6 +4,8 @@ import type { Server } from "node:http";
 import { remoteArgs, waitForRemote } from "../apps/cli/src/remote.js";
 import { healthyProxy } from "../packages/agent/src/health.js";
 import { startGateway } from "../packages/agent/src/gateway.js";
+import { sessionDeviceCount } from "../packages/agent/src/devices.js";
+import { selectWarmSimulator } from "../packages/agent/src/ios.js";
 
 const info = {
   runId: "run-1",
@@ -11,6 +13,45 @@ const info = {
   daemonToken: "secret",
   expiresAt: null,
 };
+
+test("prewarming selects an available phone, preferring the documented default", () => {
+  expect(
+    selectWarmSimulator({
+      ios: [
+        { name: "iPhone 17e", udid: "bad", isAvailable: false },
+        { name: "iPhone 17", udid: "fallback" },
+      ],
+    })?.udid,
+  ).toBe("fallback");
+  expect(
+    selectWarmSimulator({
+      ios: [
+        { name: "iPhone 17", udid: "other" },
+        { name: "iPhone 17e", udid: "preferred" },
+      ],
+    })?.udid,
+  ).toBe("preferred");
+  expect(selectWarmSimulator({ ios: [{ name: "iPad", udid: "tablet" }] })).toBeNull();
+});
+
+test("idle counts sessions, not prewarmed devices; failed inventory is unknown", () => {
+  expect(sessionDeviceCount({ result: { ok: true, data: { sessions: [] } } })).toBe(0);
+  expect(
+    sessionDeviceCount({
+      result: {
+        ok: true,
+        data: {
+          sessions: [
+            { platform: "ios", id: "phone" },
+            { platform: "ios", device_id: "phone" },
+          ],
+        },
+      },
+    }),
+  ).toBe(1);
+  expect(sessionDeviceCount({ result: { ok: false } })).toBeNull();
+  expect(sessionDeviceCount({ result: { ok: true, data: { sessions: [{}] } } })).toBeNull();
+});
 
 describe("remote commands", () => {
   test("startup timeout and session are stable across tunnel URLs", () => {

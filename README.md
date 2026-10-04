@@ -35,6 +35,11 @@ after a transport failure: inspect with `simbox exec session list` first.
 The runner streams JSON whitespace keepalives during RPCs so a cold boot does
 not hit Cloudflare's idle-response timeout. Startup progress is buffered; the
 final command result is returned when ready.
+The default iPhone and XCTest runner are prepared before the public tunnel is
+started, avoiding cold-boot contention on the Mac. This can take several minutes.
+No app session is allocated by prewarming; unused runs still expire after 15
+minutes. The generated workflow uses stable `macos-latest`; preview-only device
+types require opting into `xcode-27` in your repository's workflow.
 
 Direct `agent-device` clients remain supported via the exports printed by
 `simbox sim`, but must refresh those exports after a tunnel change. Simbox does

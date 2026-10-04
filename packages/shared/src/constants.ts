@@ -22,8 +22,8 @@ export const MAX_DEVICES_PER_RUN = 3;
  * Keep minimal — api_url override lives in the composite action default,
  * not here, so the committed file stays stable across environments.
  *
- * `xcode-27` (public preview, arm64) carries the foldable iPhone Duo
- * devicetype; `macos-latest` (Xcode 26.x) does not.
+ * Use the stable macOS image by default. Users requiring preview-only device
+ * types can opt into `xcode-27` in their workflow, accepting preview instability.
  */
 export const WORKFLOW_YAML = `name: simbox
 
@@ -32,7 +32,7 @@ on:
 
 jobs:
   simbox:
-    runs-on: xcode-27
+    runs-on: macos-latest
     timeout-minutes: 350
     steps:
       - name: Simbox agent

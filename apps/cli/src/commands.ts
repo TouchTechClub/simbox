@@ -136,7 +136,7 @@ function printRepoConnected(repo: {
 
 // ---- sim ----
 
-const SIM_TIMEOUT_MS = 8 * 60 * 1000;
+const SIM_TIMEOUT_MS = 12 * 60 * 1000;
 const SIM_POLL_MS = 3000;
 
 export async function cmdSim(opts: { new?: boolean; json?: boolean }): Promise<void> {
@@ -179,7 +179,7 @@ export async function cmdSim(opts: { new?: boolean; json?: boolean }): Promise<v
     if (!live) {
       spinner.fail("Timed out");
       throw new CliError(
-        "Run didn't come online within 8 minutes. Check the workflow run in your repo's Actions tab, then try `simbox sim` again (or `--new`).",
+        "Run didn't come online within 12 minutes. Check the workflow run in your repo's Actions tab, then try `simbox sim` again (or `--new`).",
       );
     }
     spinner.succeed("Run is live");

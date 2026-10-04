@@ -17,7 +17,7 @@ export function selectWarmSimulator(devices: Record<string, Simulator[]>): Simul
   return phones.find((device) => device.name === "iPhone 17e") ?? phones[0] ?? null;
 }
 
-/** Cold boot/build saturates small GH Macs; finish it before starting a tunnel. */
+/** Optional iOS infrastructure warmup; never a prerequisite for Android startup. */
 export async function prepareIOS(agentDeviceBin: string): Promise<void> {
   const started = Date.now();
   const deadline = started + 10 * 60_000;

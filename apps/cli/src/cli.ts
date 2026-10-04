@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import pc from "picocolors";
+import { createRequire } from "node:module";
 import { friendlyError } from "./client.js";
 import { requireToken } from "./config.js";
 import { cmdInit, cmdLogin, cmdLogout, cmdPs, cmdRepair, cmdSim, cmdStop } from "./commands.js";
@@ -10,7 +11,9 @@ const program = new Command();
 program
   .name("simbox")
   .description("On-demand iOS simulators & Android emulators on your own GitHub Actions minutes.")
-  .version("0.1.0");
+  // Resolved from package.json at runtime (bin is a bundled dist/cli.js, so a
+  // plain import of ../package.json doesn't work after `bun build`).
+  .version(getVersion());
 
 program
   .command("login")
@@ -63,6 +66,17 @@ program
   .command("logout")
   .description("Delete the saved auth token")
   .action(() => run(cmdLogout()));
+
+function getVersion(): string {
+  try {
+    // dist/cli.js sits next to package.json inside the installed package.
+    const require = createRequire(import.meta.url);
+    const pkg = require("../package.json") as { version?: string };
+    return pkg.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
 
 async function run(p: Promise<void>): Promise<void> {
   try {

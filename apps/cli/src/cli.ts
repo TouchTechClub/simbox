@@ -5,8 +5,9 @@ import { createRequire } from "node:module";
 import { friendlyError } from "./client.js";
 import { requireToken } from "./config.js";
 import { cmdInit, cmdLogin, cmdLogout, cmdPs, cmdRepair, cmdSim, cmdStop } from "./commands.js";
+import { cmdExec } from "./remote.js";
 
-const program = new Command();
+const program = new Command().enablePositionalOptions();
 
 program
   .name("simbox")
@@ -30,12 +31,24 @@ program
 
 program
   .command("sim")
-  .description("Ensure a run is live and connect agent-device to it")
+  .description("Ensure a run and its tunnel are ready for device commands")
   .option("--new", "force a fresh run even if one is live")
   .option("--json", "print {tunnel_url, daemon_token, run_id, expires_at} as JSON only")
   .action((opts: { new?: boolean; json?: boolean }) => {
     requireToken();
     return run(cmdSim(opts));
+  });
+
+program
+  .command("exec")
+  .description("Run agent-device with fresh tunnel credentials and a cold-boot startup budget")
+  .argument("[args...]", "agent-device command and arguments")
+  .allowUnknownOption()
+  .allowExcessArguments()
+  .passThroughOptions()
+  .action((args: string[]) => {
+    requireToken();
+    return run(cmdExec(args));
   });
 
 program

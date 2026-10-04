@@ -9,14 +9,40 @@ Free on-demand iOS simulators & Android emulators running on your own GitHub Act
 1. Sign in with GitHub on the dashboard, install the GitHub App, pick a repo.
 2. We commit `.github/workflows/simbox.yml` to the repo and write a `SIMBOX_TOKEN` secret.
 3. `simbox sim` asks our API for a run → we `workflow_dispatch` into your repo → a `macos-latest` runner boots `agent-device proxy` + a Cloudflare tunnel → the tunnel URL + daemon token come back to your CLI.
-4. Drive sims/emulators with `agent-device` until the run ends (idle timeout, `simbox stop`, or ~6h).
+4. Drive sims/emulators with `simbox exec <agent-device command>` until the run ends (idle timeout, `simbox stop`, or ~6h).
+
+## Use
+
+```bash
+npm i -g @touchtechclub/simbox agent-device@0.21.20
+simbox login
+simbox init
+simbox sim
+simbox exec devices
+# Pick an exact device name/UDID from inventory (multiple iPhones are available).
+simbox exec open com.apple.Preferences --platform ios --device "iPhone 17e"
+simbox exec snapshot -i
+simbox exec close --shutdown
+simbox stop
+```
+
+`exec` supplies the daemon token and refreshes the tunnel URL before **each**
+command. Its session is stable for the GitHub run, even if the tunnel restarts.
+Cold `open`/`boot`/`prepare` commands get a five-minute startup budget; override
+with `--timeout <ms>`. To use several sessions/devices, pass `--session <name>`
+consistently to each command. Simbox never automatically replays device actions
+after a transport failure: inspect with `simbox exec session list` first.
+
+Direct `agent-device` clients remain supported via the exports printed by
+`simbox sim`, but must refresh those exports after a tunnel change. Simbox does
+not edit agent-device's global configuration or existing proxy profiles.
 
 ## Monorepo
 
 | Path              | What                                                                  |
 | ----------------- | --------------------------------------------------------------------- |
 | `apps/api`        | Cloudflare Worker (Hono + D1 + KV) — auth, repo connect, run registry |
-| `apps/cli`        | `simbox` npm package — login/sim/ps/stop/repair                       |
+| `apps/cli`        | `@touchtechclub/simbox` npm package — login/sim/exec/ps/stop/repair   |
 | `apps/web`        | TanStack dashboard (Vite + Router + Query) — CF Pages                 |
 | `packages/agent`  | `simbox-agent` Bun-compiled binary that runs inside the GH job        |
 | `packages/shared` | API contracts, constants, canonical workflow YAML                     |

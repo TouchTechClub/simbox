@@ -55,6 +55,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run check
+      - run: bun run test
 
   # ---- simbox-agent binary → GitHub Release (sha256-pinned) ----
   agent:

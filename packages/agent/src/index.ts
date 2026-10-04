@@ -23,6 +23,8 @@ import { installAgentDevice, installCloudflared, prepareAndroid } from "./provis
 import { ApiClient, HttpError } from "./api.js";
 import { countActiveDevices } from "./devices.js";
 import { run } from "./proc.js";
+import { startGateway } from "./gateway.js";
+import { healthyProxy, waitForProxy } from "./health.js";
 
 const TUNNEL_URL_TIMEOUT_MS = 60_000;
 const TUNNEL_URL_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
@@ -33,6 +35,7 @@ const TUNNEL_PROBE_FAILURE_LIMIT = 2;
 const PROXY_PROBE_TIMEOUT_MS = 10_000;
 const PROXY_PROBE_FAILURE_LIMIT = 2;
 const PROXY_RESTART_LIMIT = 5; // daemon can die repeatedly on GH macOS runners
+const UPSTREAM_PORT = PROXY_PORT + 1;
 
 // ---------------------------------------------------------------------------
 // Shared run state (module-level so provision/supervise/shutdown all see it)
@@ -59,6 +62,7 @@ const state = {
   shuttingDown: false,
   bootedAt: Date.now(),
   children: {} as { proxy?: ManagedChild; tunnel?: ManagedChild },
+  gateway: null as ReturnType<typeof startGateway> | null,
   wake: null as (() => void) | null,
 };
 
@@ -107,13 +111,20 @@ function spawnProxy(): ManagedChild {
       state.agentDeviceBin,
       "proxy",
       "--port",
-      String(PROXY_PORT),
+      String(UPSTREAM_PORT),
       "--host",
       "127.0.0.1",
       "--daemon-auth-token",
       state.daemonToken,
     ],
-    { stdout: "pipe", stderr: "pipe", stdin: "ignore" },
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: "ignore",
+      // Simbox owns idle shutdown. Otherwise an unused embedded daemon reaps
+      // itself after five minutes, leaving a live proxy with a dead upstream.
+      env: { ...Bun.env, AGENT_DEVICE_DAEMON_IDLE_TIMEOUT_MS: "0" },
+    },
   );
   const child = track("agent-device proxy", proc);
   pumpLines(proc.stdout, "agent-device");
@@ -260,6 +271,7 @@ async function shutdown(reason: string, code: number): Promise<never> {
     }
   }
   await killChildren();
+  await state.gateway?.server.stop(true);
   info(`goodbye (exit ${code})`);
   process.exit(code);
 }
@@ -279,11 +291,12 @@ async function handleDeadChildren(): Promise<boolean> {
     warn(`restarting agent-device proxy (${c.restarts + 1}/${PROXY_RESTART_LIMIT})`);
     state.children.proxy = spawnProxy();
     state.children.proxy.restarts = c.restarts + 1;
+    await waitForProxy(`http://127.0.0.1:${PROXY_PORT}/agent-device/health`);
   }
   if (state.children.tunnel?.dead) {
     const c = state.children.tunnel;
-    if (c.restarts >= 1) {
-      error("cloudflared died twice — exiting");
+    if (c.restarts >= 3) {
+      error("cloudflared exhausted its restart budget — exiting");
       return false;
     }
     warn("restarting cloudflared (new tunnel URL)");
@@ -294,6 +307,7 @@ async function handleDeadChildren(): Promise<boolean> {
       const newUrl = await t.url;
       addMask(newUrl);
       state.tunnelUrl = newUrl;
+      await waitForProxy(`${newUrl}/agent-device/health`);
       // URL changed → re-register so the API hands out the fresh tunnel.
       await register();
       info("tunnel re-registered with new URL");
@@ -361,9 +375,7 @@ async function proxyUpstreamDead(): Promise<boolean> {
     const res = await fetch(`http://127.0.0.1:${PROXY_PORT}/agent-device/health`, {
       signal: AbortSignal.timeout(PROXY_PROBE_TIMEOUT_MS),
     });
-    if (!res.ok) return true;
-    const body = (await res.json()) as { ok?: boolean; upstream?: { ok?: boolean } };
-    return body.ok === false || body.upstream?.ok === false;
+    return !healthyProxy(res.status, await res.json());
   } catch {
     return true; // local connect/timeout — proxy wedged
   }
@@ -376,13 +388,17 @@ async function supervise(): Promise<never> {
   let lastDeviceSeenAt = Date.now(); // idle clock starts at boot
   for (;;) {
     await interruptibleSleep(HEARTBEAT_INTERVAL_SECONDS * 1000);
+    // A cold boot/runner build is real work, not an idle or wedged daemon.
+    const activity = state.gateway?.activity();
+    let busy = (activity?.inFlight ?? 0) > 0;
+    if (activity) lastDeviceSeenAt = Math.max(lastDeviceSeenAt, activity.lastActivityAt);
 
     // --- children ---
     const childrenOk = await handleDeadChildren();
     if (!childrenOk) await shutdown("child process died twice", 1);
 
     // --- tunnel liveness (edge-side; process can be a zombie) ---
-    if (!state.children.tunnel?.dead && (await tunnelEdgeDead())) {
+    if (!busy && !state.children.tunnel?.dead && (await tunnelEdgeDead())) {
       tunnelProbeFailures += 1;
       warn(`tunnel unreachable at edge (${tunnelProbeFailures}/${TUNNEL_PROBE_FAILURE_LIMIT})`);
       if (tunnelProbeFailures >= TUNNEL_PROBE_FAILURE_LIMIT) {
@@ -398,7 +414,7 @@ async function supervise(): Promise<never> {
     }
 
     // --- proxy liveness (upstream daemon can die inside a live proxy) ---
-    if (!state.children.proxy?.dead && (await proxyUpstreamDead())) {
+    if (!busy && !state.children.proxy?.dead && (await proxyUpstreamDead())) {
       proxyProbeFailures += 1;
       warn(`proxy upstream dead (${proxyProbeFailures}/${PROXY_PROBE_FAILURE_LIMIT})`);
       if (proxyProbeFailures >= PROXY_PROBE_FAILURE_LIMIT) {
@@ -417,6 +433,11 @@ async function supervise(): Promise<never> {
     // --- device count ---
     const activeDevices = await countActiveDevices();
     if (activeDevices > 0) lastDeviceSeenAt = Date.now();
+    // A request can start while probes/device inventory are awaited.
+    const latestActivity = state.gateway?.activity();
+    busy = (latestActivity?.inFlight ?? 0) > 0;
+    if (latestActivity)
+      lastDeviceSeenAt = Math.max(lastDeviceSeenAt, latestActivity.lastActivityAt);
 
     // --- exits (checked before heartbeat so a dead run doesn't beat one more time) ---
     const uptimeMin = (Date.now() - state.bootedAt) / 60_000;
@@ -424,7 +445,7 @@ async function supervise(): Promise<never> {
       await shutdown(`hard exit after ${HARD_EXIT_MINUTES} minutes`, 0);
     }
     const idleMin = (Date.now() - lastDeviceSeenAt) / 60_000;
-    if (idleMin >= IDLE_EXIT_MINUTES) {
+    if (!busy && idleMin >= IDLE_EXIT_MINUTES) {
       await shutdown(`idle exit — no active devices for ${IDLE_EXIT_MINUTES} minutes`, 0);
     }
 
@@ -438,7 +459,7 @@ async function supervise(): Promise<never> {
       heartbeatFailures = 0;
       info(
         `heartbeat ok — devices=${activeDevices} android=${state.androidReady} ` +
-          `idle=${idleMin.toFixed(1)}m up=${uptimeMin.toFixed(1)}m`,
+          `idle=${idleMin.toFixed(1)}m busy=${busy} up=${uptimeMin.toFixed(1)}m`,
       );
     } catch (err) {
       if (err instanceof HttpError && (err.status === 401 || err.status === 403)) {
@@ -505,7 +526,14 @@ async function main(): Promise<void> {
 
   // 4. agent-device proxy
   state.children.proxy = spawnProxy();
-  info(`agent-device proxy on 127.0.0.1:${PROXY_PORT} (pid ${state.children.proxy.proc.pid})`);
+  state.gateway = startGateway({
+    port: PROXY_PORT,
+    upstreamPort: UPSTREAM_PORT,
+    token: state.daemonToken,
+  });
+  await state.gateway.ready;
+  await waitForProxy(`http://127.0.0.1:${PROXY_PORT}/agent-device/health`);
+  info(`agent-device gateway on 127.0.0.1:${PROXY_PORT} (pid ${state.children.proxy.proc.pid})`);
 
   // 5. cloudflared quick tunnel — wait for the URL.
   const tunnel = spawnTunnel();
@@ -517,6 +545,7 @@ async function main(): Promise<void> {
     await shutdown("no tunnel URL", 1);
   }
   addMask(state.tunnelUrl);
+  await waitForProxy(`${state.tunnelUrl}/agent-device/health`);
   info("tunnel up (url registered + masked)");
 
   // 6. Register

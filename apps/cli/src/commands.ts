@@ -16,6 +16,7 @@ import { authPath, saveToken, webBaseUrl } from "./config.js";
 import { connectFlow, type ConnectInfo } from "./connect.js";
 import { openInBrowser } from "./open.js";
 import { fmtCountdown, sleep, Spinner } from "./util.js";
+import { waitForRemote } from "./remote.js";
 
 // ---- login ----
 
@@ -189,6 +190,8 @@ export async function cmdSim(opts: { new?: boolean; json?: boolean }): Promise<v
       expiresAt: live.run.expiresAt,
     };
   }
+
+  info = await waitForRemote(info);
 
   if (json) {
     const payload = {

@@ -34,8 +34,9 @@ Then from your machine:
 
 ```bash
 npx @touchtechclub/simbox login
-npx @touchtechclub/simbox sim          # waits for the run, prints the connect command
-agent-device open <app> --platform ios
+npx @touchtechclub/simbox sim          # waits for run AND tunnel readiness
+npx @touchtechclub/simbox exec devices
+npx @touchtechclub/simbox exec open <app> --platform ios --udid <udid-from-inventory>
 ```
 
 ## Inputs
@@ -55,11 +56,13 @@ agent-device open <app> --platform ios
 3. Untars and runs `simbox-agent`, which:
    - installs `agent-device` + `cloudflared` (versions pinned in the binary),
    - preps an Android AVD in the background (`android_ready` in heartbeats),
-   - starts `agent-device proxy` on `127.0.0.1:4310` behind a trycloudflare
-     tunnel,
+   - starts `agent-device proxy` on `127.0.0.1:4311`, with an activity-aware
+     gateway on `127.0.0.1:4310` behind a trycloudflare tunnel,
    - registers `tunnel_url` + a per-run `daemon_token` with the API over TLS
      (`Authorization: Bearer SIMBOX_TOKEN`) — neither ever hits the logs,
-   - heartbeats every 60s; exits after 15 min idle or 5h45m uptime (clean
+   - waits for healthy local proxy and public tunnel before registration,
+   - heartbeats every 60s; authenticated in-flight RPCs postpone idle exit
+     (each request is bounded to 10 minutes); exits after 15 min idle or 5h45m uptime (clean
      shutdown before GitHub's 6h limit → green checkmark).
 
 ## Security notes

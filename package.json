@@ -18,6 +18,7 @@
   },
   "type": "module",
   "scripts": {
+    "test": "bun test tests",
     "typecheck": "for d in packages/shared packages/db packages/agent apps/api apps/cli apps/web; do echo \"── $d\"; (bun run --cwd $d typecheck) || exit 1; done",
     "check": "oxlint && oxfmt --check",
     "check:fix": "oxlint --fix && oxfmt --write",

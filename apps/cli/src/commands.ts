@@ -9,6 +9,7 @@ import {
   pollDeviceToken,
   repairRepo,
   repoStatus,
+  runHistory,
   startDeviceFlow,
   stopRun,
 } from "./client.js";
@@ -162,7 +163,16 @@ export async function cmdSim(opts: { new?: boolean; json?: boolean }): Promise<v
     while (Date.now() < deadline) {
       await sleep(SIM_POLL_MS);
       const run = await currentRun();
-      if (!run) continue;
+      if (!run) {
+        const ended = (await runHistory()).find((candidate) => candidate.id === first.runId);
+        if (ended && (ended.state === "ended" || ended.state === "failed")) {
+          spinner.fail(`Run ${ended.state}`);
+          throw new CliError(
+            `The run ${ended.state} during startup (${ended.endReason ?? "check the Actions logs"}). Try \`simbox sim --new\`.`,
+          );
+        }
+        continue;
+      }
       if (run.state === "live" && run.tunnelUrl && run.daemonToken) {
         live = { run, tunnelUrl: run.tunnelUrl, daemonToken: run.daemonToken };
         break;

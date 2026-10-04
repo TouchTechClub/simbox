@@ -3,6 +3,7 @@ import type {
   EnsureRunResponse,
   PublicRun,
   RepoStatusResponse,
+  RunSummary,
   User,
 } from "@simbox/shared";
 import { apiBaseUrl, loadToken } from "./config.js";
@@ -178,6 +179,9 @@ export const stopRun = (runId: string) =>
   api<{ ok: boolean; state?: string }>(`/v1/runs/${encodeURIComponent(runId)}/stop`, {
     method: "POST",
   });
+
+export const runHistory = async (): Promise<RunSummary[]> =>
+  (await api<{ runs: RunSummary[] }>("/v1/runs")).runs;
 
 /** Map API error codes into actionable CLI messages. */
 export function friendlyError(err: unknown): CliError {

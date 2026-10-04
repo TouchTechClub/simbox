@@ -8,6 +8,30 @@ import { sleep } from "./util.js";
 
 export const STARTUP_TIMEOUT_MS = 300_000;
 
+export async function waitForAndroid(
+  runId: string,
+  options: {
+    read?: typeof currentRun;
+    pause?: () => Promise<void>;
+    timeoutMs?: number;
+  } = {},
+): Promise<void> {
+  const deadline = Date.now() + (options.timeoutMs ?? 12 * 60_000);
+  do {
+    const run = await (options.read ?? currentRun)();
+    if (!run || run.id !== runId || run.state !== "live") {
+      throw new CliError(
+        "The run ended or was replaced while preparing Android. Run `simbox sim` again.",
+      );
+    }
+    if (run.androidReady) return;
+    await (options.pause?.() ?? sleep(3000));
+  } while (Date.now() < deadline);
+  throw new CliError(
+    "Android AVD preparation did not complete. Inspect the Actions job's Android emulator prep logs. No device command was sent.",
+  );
+}
+
 /** Poll only reads: never replay an open/tap/install whose outcome is unknown. */
 export async function waitForRemote(
   initial: ConnectInfo,
@@ -113,6 +137,14 @@ export async function cmdExec(args: string[]): Promise<void> {
   if (!bin) throw new CliError("Install agent-device first: npm i -g agent-device@0.21.20");
   const initial = await refreshRemote();
   if (!initial) throw new CliError("No live run. Start one with `simbox sim`.");
+  if (
+    args.some(
+      (arg, i) =>
+        arg === "--platform=android" || (arg === "--platform" && args[i + 1] === "android"),
+    )
+  ) {
+    await waitForAndroid(initial.runId);
+  }
   const info = await waitForRemote(initial);
   const env: NodeJS.ProcessEnv = {
     ...process.env,

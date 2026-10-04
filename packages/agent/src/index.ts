@@ -26,6 +26,7 @@ import { run } from "./proc.js";
 import { startGateway } from "./gateway.js";
 import { healthyProxy, waitForProxy } from "./health.js";
 import { prepareIOS } from "./ios.js";
+import { preparePlatforms } from "./platforms.js";
 
 const TUNNEL_URL_TIMEOUT_MS = 60_000;
 const TUNNEL_URL_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
@@ -539,11 +540,16 @@ async function main(): Promise<void> {
   await waitForProxy(`http://127.0.0.1:${PROXY_PORT}/agent-device/health`);
   info(`agent-device gateway on 127.0.0.1:${PROXY_PORT} (pid ${state.children.proxy.proc.pid})`);
 
-  if (Bun.env.SIMBOX_WARM_IOS !== "false") await prepareIOS(state.agentDeviceBin);
-  // Don't compete with the first iOS boot for CPU/disk on small hosted Macs.
-  // Android preparation is still non-blocking once iOS infrastructure is ready.
-  void prepareAndroid(() => {
-    state.androidReady = true;
+  // Platform preparation must not gate tunnel registration. iOS warmup is
+  // explicitly opt-in, and even its failure cannot skip Android provisioning.
+  void preparePlatforms({
+    warmIOS: Bun.env.SIMBOX_WARM_IOS === "true",
+    ios: () => prepareIOS(state.agentDeviceBin),
+    android: () =>
+      prepareAndroid(() => {
+        state.androidReady = true;
+      }),
+    warn,
   });
 
   // 5. cloudflared quick tunnel — wait for the URL.

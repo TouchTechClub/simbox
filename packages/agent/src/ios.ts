@@ -22,9 +22,12 @@ export async function prepareIOS(agentDeviceBin: string): Promise<void> {
   const started = Date.now();
   const deadline = started + 10 * 60_000;
   const inventory = await run(["xcrun", "simctl", "list", "devices", "available", "-j"], {
-    timeoutMs: 15_000,
+    timeoutMs: 60_000,
   });
-  if (inventory.code !== 0) throw new Error("could not inspect iOS simulator inventory");
+  if (inventory.code !== 0)
+    throw new Error(
+      `could not inspect iOS simulator inventory (${inventory.code === -1 ? "timed out after 60s" : `exit ${inventory.code}`}): ${inventory.stderr.trim().slice(-500)}`,
+    );
   const device = selectWarmSimulator(
     (JSON.parse(inventory.stdout) as { devices: Record<string, Simulator[]> }).devices,
   );

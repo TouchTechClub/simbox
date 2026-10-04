@@ -7,6 +7,10 @@ branding:
   icon: box
   color: purple
 inputs:
+  warm_ios:
+    description: Optional best-effort iOS prewarming. Leave false for Android-only runs.
+    required: false
+    default: "false"
   token:
     description: SIMBOX_TOKEN repo secret, provisioned by simbox init.
     required: true
@@ -24,6 +28,7 @@ runs:
     - name: Run simbox-agent
       shell: bash
       env:
+        SIMBOX_WARM_IOS: ${{ inputs.warm_ios }}
         SIMBOX_TOKEN: ${{ inputs.token }}
         SIMBOX_API_URL: ${{ inputs.api_url }}
       run: |

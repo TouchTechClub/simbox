@@ -56,7 +56,7 @@ npx @touchtechclub/simbox exec open <app> --platform ios --udid <udid-from-inven
 3. Untars and runs `simbox-agent`, which:
    - installs `agent-device` + `cloudflared` (versions pinned in the binary),
    - preps an Android AVD in the background (`android_ready` in heartbeats),
-   - prewarms the default iPhone and XCTest before tunnel startup (no app session),
+   - optionally prewarms iOS (`warm_ios: "true"`); failures never block Android,
    - starts `agent-device proxy` on `127.0.0.1:4311`, with an activity-aware
      gateway on `127.0.0.1:4310` behind a trycloudflare tunnel,
    - registers `tunnel_url` + a per-run `daemon_token` with the API over TLS

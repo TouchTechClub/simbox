@@ -156,8 +156,9 @@ export async function prepareAndroid(setReady: () => void): Promise<void> {
     });
     if (lic.code !== 0) warn(`sdkmanager --licenses exited ${lic.code} (continuing)`);
 
-    // platform-tools ensures adb is present for device counting.
-    const pkgs = ["platform-tools", PINS.androidPlatform, PINS.androidSystemImage];
+    // An AVD/system image alone is not runnable: install the emulator executable
+    // too instead of relying on whatever happens to be in the hosted image.
+    const pkgs = ["platform-tools", "emulator", PINS.androidPlatform, PINS.androidSystemImage];
     info(`sdkmanager ${pkgs.join(" ")}`);
     const inst = await run([sdkmanager, ...pkgs], {
       input: "y\n".repeat(16),
@@ -191,6 +192,12 @@ export async function prepareAndroid(setReady: () => void): Promise<void> {
       warn(`avdmanager create avd exited ${avd.code}: ${avd.stderr.trim().slice(0, 300)}`);
       return;
     }
+    const acceleration = await run([join(sdkRoot, "emulator", "emulator"), "-accel-check"], {
+      timeoutMs: 15_000,
+    });
+    info(
+      `Android acceleration check (exit ${acceleration.code}): ${acceleration.stdout.trim().slice(0, 500)} ${acceleration.stderr.trim().slice(0, 500)}`,
+    );
     info("AVD 'simbox' created — Android ready");
     setReady();
   } catch (err) {

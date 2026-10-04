@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
-import { remoteArgs, waitForRemote } from "../apps/cli/src/remote.js";
+import { remoteArgs, waitForRemote, waitForAndroid } from "../apps/cli/src/remote.js";
 import { healthyProxy } from "../packages/agent/src/health.js";
 import { startGateway } from "../packages/agent/src/gateway.js";
 import { sessionDeviceCount } from "../packages/agent/src/devices.js";
 import { selectWarmSimulator } from "../packages/agent/src/ios.js";
+import { preparePlatforms } from "../packages/agent/src/platforms.js";
 
 const info = {
   runId: "run-1",
@@ -13,6 +14,58 @@ const info = {
   daemonToken: "secret",
   expiresAt: null,
 };
+
+test("default Android preparation never invokes iOS inventory", async () => {
+  let android = false;
+  await preparePlatforms({
+    warmIOS: false,
+    ios: async () => {
+      throw new Error("iOS must not run");
+    },
+    android: async () => {
+      android = true;
+    },
+    warn: () => {},
+  });
+  expect(android).toBe(true);
+});
+
+test("even explicitly enabled iOS warmup failures cannot block Android", async () => {
+  const events: string[] = [];
+  await preparePlatforms({
+    warmIOS: true,
+    ios: async () => {
+      throw new Error("inventory timed out");
+    },
+    android: async () => {
+      events.push("android");
+    },
+    warn: (message) => {
+      events.push(message);
+    },
+  });
+  expect(events[0]).toContain("inventory timed out");
+  expect(events[1]).toBe("android");
+});
+
+test("Android commands wait for AVD readiness without sending device commands", async () => {
+  let reads = 0;
+  await waitForAndroid("test", {
+    read: async () => ({ id: "test", state: "live", androidReady: ++reads === 2 }) as any,
+    pause: async () => {},
+  });
+  expect(reads).toBe(2);
+  await expect(waitForAndroid("test", { read: async () => null })).rejects.toThrow(
+    "ended or was replaced",
+  );
+  await expect(
+    waitForAndroid("test", {
+      read: async () => ({ id: "test", state: "live", androidReady: false }) as any,
+      pause: async () => {},
+      timeoutMs: 0,
+    }),
+  ).rejects.toThrow("No device command was sent");
+});
 
 test("prewarming selects an available phone, preferring the documented default", () => {
   expect(

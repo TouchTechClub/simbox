@@ -4,7 +4,7 @@ import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 
 /**
- * RunnerBox infra — deploys the API worker, D1 (drizzle migrations), KV,
+ * Simbox infra — deploys the API worker, D1 (drizzle migrations), KV,
  * and the TanStack web SPA as Cloudflare resources.
  *
  * One-time setup:
@@ -19,19 +19,19 @@ import * as Effect from "effect/Effect";
 // stack — orphan workers, plus an EMPTY D1/KV. Pinned names make the stack
 // deployer-independent. Renaming after the fact = resource replacement, so
 // these must not change once data lives in them.
-export const db = Cloudflare.D1.Database("runnerbox-db", {
-  name: "runnerbox-db",
+export const db = Cloudflare.D1.Database("simbox-db", {
+  name: "simbox-db",
   migrations: "../db/migrations",
 });
 
-export const kv = Cloudflare.KV.Namespace("runnerbox-kv", {
-  title: "runnerbox-kv",
+export const kv = Cloudflare.KV.Namespace("simbox-kv", {
+  title: "simbox-kv",
 });
 
-export const api = Cloudflare.Worker("runnerbox-api", {
-  name: "runnerbox-api",
+export const api = Cloudflare.Worker("simbox-api", {
+  name: "simbox-api",
   // Manage the custom domain declaratively so a worker replace re-attaches it.
-  domain: "api.runnerbox.dpdns.org",
+  domain: "api.simbox.touchtech.club",
   main: "../../apps/api/src/index.ts",
   compatibility: {
     flags: ["nodejs_compat"],
@@ -65,7 +65,7 @@ export const api = Cloudflare.Worker("runnerbox-api", {
 export type ApiEnv = Cloudflare.InferEnv<typeof api>;
 
 export default Alchemy.Stack(
-  "runnerbox",
+  "simbox",
   {
     providers: Cloudflare.providers(),
     state: Cloudflare.state(),
@@ -73,9 +73,9 @@ export default Alchemy.Stack(
   Effect.gen(function* () {
     const apiWorker = yield* api;
 
-    const web = yield* Cloudflare.Website.Vite("runnerbox-web", {
-      name: "runnerbox-web",
-      domain: "runnerbox.dpdns.org",
+    const web = yield* Cloudflare.Website.Vite("simbox-web", {
+      name: "simbox-web",
+      domain: "simbox.touchtech.club",
       rootDir: "../../apps/web",
       assets: {
         htmlHandling: "auto-trailing-slash",

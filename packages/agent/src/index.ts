@@ -1,6 +1,6 @@
 /**
- * runnerbox-agent — boots agent-device proxy + cloudflared quick tunnel on a
- * GitHub Actions macOS runner, registers with the runnerbox API, then
+ * simbox-agent — boots agent-device proxy + cloudflared quick tunnel on a
+ * GitHub Actions macOS runner, registers with the simbox API, then
  * supervises until idle/hard-exit/token-revocation.
  *
  * Exit codes: 0 = clean shutdown (green check), 1 = failure (red X).
@@ -12,8 +12,8 @@ import {
   IDLE_EXIT_MINUTES,
   PROD_API_URL,
   PROXY_PORT,
-} from "@runnerbox/shared";
-import type { RunRegisterRequest } from "@runnerbox/shared";
+} from "@simbox/shared";
+import type { RunRegisterRequest } from "@simbox/shared";
 import { PINS } from "./pins.js";
 import pkg from "../package.json" with { type: "json" };
 import { addMask, error, info, warn } from "./log.js";
@@ -46,8 +46,8 @@ interface ManagedChild {
 }
 
 const state = {
-  apiUrl: Bun.env.RUNNERBOX_API_URL ?? PROD_API_URL,
-  token: Bun.env.RUNNERBOX_TOKEN ?? "",
+  apiUrl: Bun.env.SIMBOX_API_URL ?? PROD_API_URL,
+  token: Bun.env.SIMBOX_TOKEN ?? "",
   ghRunId: 0,
   ghRunAttempt: Bun.env.GITHUB_RUN_ATTEMPT ?? "?",
   daemonToken: "",
@@ -442,7 +442,7 @@ async function supervise(): Promise<never> {
       );
     } catch (err) {
       if (err instanceof HttpError && (err.status === 401 || err.status === 403)) {
-        error("heartbeat unauthorized — RUNNERBOX_TOKEN revoked, exiting");
+        error("heartbeat unauthorized — SIMBOX_TOKEN revoked, exiting");
         await shutdown("token revoked", 1);
       }
       heartbeatFailures++;
@@ -464,7 +464,7 @@ async function supervise(): Promise<never> {
 async function main(): Promise<void> {
   // 1. Env
   if (!state.token) {
-    error("RUNNERBOX_TOKEN is required (repo secret). Set it in the workflow's `with: token:`.");
+    error("SIMBOX_TOKEN is required (repo secret). Set it in the workflow's `with: token:`.");
     process.exit(1);
   }
   if (!Bun.env.GITHUB_RUN_ID || Number.isNaN(Number(Bun.env.GITHUB_RUN_ID))) {
@@ -480,7 +480,7 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => void shutdown("SIGINT", 0));
 
   info(
-    `runnerbox-agent v${pkg.version} — run ${state.ghRunId} (attempt ${state.ghRunAttempt}), api ${state.apiUrl}`,
+    `simbox-agent v${pkg.version} — run ${state.ghRunId} (attempt ${state.ghRunAttempt}), api ${state.apiUrl}`,
   );
 
   // 2. Provision: agent-device + cloudflared in parallel; Android prep runs

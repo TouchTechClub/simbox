@@ -4,11 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark light" />
-    <title>RunnerBox</title>
+    <title>Simbox</title>
     <script>
       // Apply the stored theme before first paint (defaults to dark).
       try {
-        var theme = localStorage.getItem("rb-theme") || "dark";
+        var theme = localStorage.getItem("simbox-theme") || "dark";
         document.documentElement.classList.toggle("dark", theme !== "light");
       } catch (e) {}
     </script>

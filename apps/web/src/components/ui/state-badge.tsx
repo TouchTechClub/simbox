@@ -1,4 +1,4 @@
-import type { RepoState, RunState } from "@runnerbox/shared/types";
+import type { RepoState, RunState } from "@simbox/shared/types";
 import type { ReactNode } from "react";
 
 import { Badge, type badgeVariants } from "@/components/ui/badge";

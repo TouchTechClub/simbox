@@ -1,5 +1,5 @@
 {
-  "name": "@runnerbox/api",
+  "name": "@simbox/api",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,13 +7,13 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "db:migrate": "wrangler d1 migrations apply runnerbox-db",
-    "db:migrate:local": "wrangler d1 migrations apply runnerbox-db --local"
+    "db:migrate": "wrangler d1 migrations apply simbox-db",
+    "db:migrate:local": "wrangler d1 migrations apply simbox-db --local"
   },
   "dependencies": {
     "@noble/hashes": "^1.7.0",
-    "@runnerbox/db": "*",
-    "@runnerbox/shared": "*",
+    "@simbox/db": "*",
+    "@simbox/shared": "*",
     "better-auth": "catalog:",
     "drizzle-orm": "catalog:",
     "hono": "^4.7.0",

@@ -1,6 +1,6 @@
 import { rmSync } from "node:fs";
 import pc from "picocolors";
-import type { PublicRun, RepoStatusResponse } from "@runnerbox/shared";
+import type { PublicRun, RepoStatusResponse } from "@simbox/shared";
 import {
   CliError,
   currentRun,
@@ -55,17 +55,17 @@ export async function cmdLogin(): Promise<void> {
         throw new CliError("Login was denied in the browser.");
       case "expired_token":
         spinner.fail("Device code expired");
-        throw new CliError("Login code expired — run `runnerbox login` again.");
+        throw new CliError("Login code expired — run `simbox login` again.");
       default:
         spinner.fail("Login failed");
         throw new CliError(
-          `Login failed: ${res.description ?? res.error}. Run \`runnerbox login\` again.`,
+          `Login failed: ${res.description ?? res.error}. Run \`simbox login\` again.`,
         );
     }
   }
   if (!token) {
     spinner.fail("Timed out");
-    throw new CliError("Login timed out — run `runnerbox login` again.");
+    throw new CliError("Login timed out — run `simbox login` again.");
   }
 
   const user = await me(token);
@@ -109,7 +109,7 @@ export async function cmdInit(): Promise<void> {
 
   spinner.fail("Timed out waiting for repo connection");
   throw new CliError(
-    `No repo connected after 10 minutes. Finish onboarding at ${webBaseUrl()}/onboarding then re-run \`runnerbox init\`.`,
+    `No repo connected after 10 minutes. Finish onboarding at ${webBaseUrl()}/onboarding then re-run \`simbox init\`.`,
   );
 }
 
@@ -122,7 +122,7 @@ function printRepoConnected(repo: {
   console.log(`Repo connected: ${pc.bold(repo.fullName)} ${pc.dim(`(${repo.state})`)}`);
   if (repo.state === "pending_pr" && repo.prUrl) {
     console.log(
-      `Your default branch is protected — merge ${pc.underline(repo.prUrl)} to activate RunnerBox.`,
+      `Your default branch is protected — merge ${pc.underline(repo.prUrl)} to activate Simbox.`,
     );
   }
   if (repo.private) {
@@ -130,7 +130,7 @@ function printRepoConnected(repo: {
       pc.yellow("Note: private repos are billed at the 10× macOS minute multiplier by GitHub."),
     );
   }
-  console.log(`Run ${pc.cyan("runnerbox sim")} to boot a simulator.`);
+  console.log(`Run ${pc.cyan("simbox sim")} to boot a simulator.`);
 }
 
 // ---- sim ----
@@ -169,7 +169,7 @@ export async function cmdSim(opts: { new?: boolean; json?: boolean }): Promise<v
       if (run.state === "failed" || run.state === "ended" || run.state === "closing") {
         spinner.fail(`Run ${run.state}`);
         throw new CliError(
-          `The run ${run.state} before coming online (${run.endReason ?? "no reason given"}). Try \`runnerbox sim --new\`.`,
+          `The run ${run.state} before coming online (${run.endReason ?? "no reason given"}). Try \`simbox sim --new\`.`,
         );
       }
       spinner.set(`Run ${run.state}`);
@@ -178,7 +178,7 @@ export async function cmdSim(opts: { new?: boolean; json?: boolean }): Promise<v
     if (!live) {
       spinner.fail("Timed out");
       throw new CliError(
-        "Run didn't come online within 8 minutes. Check the workflow run in your repo's Actions tab, then try `runnerbox sim` again (or `--new`).",
+        "Run didn't come online within 8 minutes. Check the workflow run in your repo's Actions tab, then try `simbox sim` again (or `--new`).",
       );
     }
     spinner.succeed("Run is live");
@@ -214,7 +214,7 @@ export async function cmdSim(opts: { new?: boolean; json?: boolean }): Promise<v
 export async function cmdPs(): Promise<void> {
   const run = await currentRun();
   if (!run) {
-    console.log(`No active run. Start one with ${pc.cyan("runnerbox sim")}.`);
+    console.log(`No active run. Start one with ${pc.cyan("simbox sim")}.`);
     return;
   }
 

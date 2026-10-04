@@ -1,10 +1,10 @@
-export const PROD_API_URL = "https://api.runnerbox.dpdns.org";
+export const PROD_API_URL = "https://api.simbox.touchtech.club";
 
 /** Repo secret written into the user's repository; authenticates run registration. */
-export const REPO_SECRET_NAME = "RUNNERBOX_TOKEN";
+export const REPO_SECRET_NAME = "SIMBOX_TOKEN";
 
 /** Path of the workflow file we commit to the user's repo. */
-export const WORKFLOW_PATH = ".github/workflows/runnerbox.yml";
+export const WORKFLOW_PATH = ".github/workflows/simbox.yml";
 
 /** Local port the agent-device proxy binds on the runner (localhost only). */
 export const PROXY_PORT = 4310;
@@ -25,21 +25,21 @@ export const MAX_DEVICES_PER_RUN = 3;
  * `xcode-27` (public preview, arm64) carries the foldable iPhone Duo
  * devicetype; `macos-latest` (Xcode 26.x) does not.
  */
-export const WORKFLOW_YAML = `name: runnerbox
+export const WORKFLOW_YAML = `name: simbox
 
 on:
   workflow_dispatch:
 
 jobs:
-  runnerbox:
+  simbox:
     runs-on: xcode-27
     timeout-minutes: 350
     steps:
-      - name: RunnerBox agent
+      - name: Simbox agent
         uses: TouchTechClub/runner@v1
         with:
-          token: \${{ secrets.RUNNERBOX_TOKEN }}
+          token: \${{ secrets.SIMBOX_TOKEN }}
 `;
 
 /** Commit message used when installing the workflow file. */
-export const WORKFLOW_COMMIT_MESSAGE = "chore: add runnerbox workflow";
+export const WORKFLOW_COMMIT_MESSAGE = "chore: add simbox workflow";

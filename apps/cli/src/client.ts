@@ -4,7 +4,7 @@ import type {
   PublicRun,
   RepoStatusResponse,
   User,
-} from "@runnerbox/shared";
+} from "@simbox/shared";
 import { apiBaseUrl, loadToken } from "./config.js";
 
 export class CliError extends Error {
@@ -63,7 +63,7 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
     throw new ApiRequestError(
       res.status,
       "unauthorized",
-      "Your session is invalid or expired. Run `runnerbox login`.",
+      "Your session is invalid or expired. Run `simbox login`.",
     );
   }
   if (res.status === 404) {
@@ -94,7 +94,7 @@ async function parseErrorBody(res: Response): Promise<ApiError | null> {
 // Auth is better-auth. CLI login = RFC 8628 device flow against /api/auth/*.
 // These endpoints return RFC 8628 snake_case fields and JSON (NOT form-encoded).
 
-export const CLI_CLIENT_ID = "runnerbox-cli";
+export const CLI_CLIENT_ID = "simbox-cli";
 
 export interface DeviceCodeResponse {
   device_code: string;
@@ -184,11 +184,11 @@ export function friendlyError(err: unknown): CliError {
   if (err instanceof CliError) return err;
   if (err instanceof ApiRequestError) {
     if (err.code === "repo_not_connected" || err.code === "no_repo") {
-      return new CliError(`${err.message}\nRun \`runnerbox init\` to connect a repo.`);
+      return new CliError(`${err.message}\nRun \`simbox init\` to connect a repo.`);
     }
     if (err.code === "at_capacity") {
       return new CliError(
-        `${err.message}\nThat run is full — try \`runnerbox sim --new\` for a fresh one.`,
+        `${err.message}\nThat run is full — try \`simbox sim --new\` for a fresh one.`,
       );
     }
     if (
@@ -197,7 +197,7 @@ export function friendlyError(err: unknown): CliError {
       err.code === "repo_not_ready" ||
       err.code === "dispatch_failed"
     ) {
-      return new CliError(`${err.message}\nRun \`runnerbox repair\` to fix the repo setup.`);
+      return new CliError(`${err.message}\nRun \`simbox repair\` to fix the repo setup.`);
     }
     return new CliError(err.message);
   }

@@ -1,15 +1,9 @@
-import { PROD_API_URL } from "@runnerbox/shared/constants";
-import type {
-  PublicRun,
-  Repo,
-  RepoStatusResponse,
-  RunSummary,
-  User,
-} from "@runnerbox/shared/types";
+import { PROD_API_URL } from "@simbox/shared/constants";
+import type { PublicRun, Repo, RepoStatusResponse, RunSummary, User } from "@simbox/shared/types";
 
 /**
  * API base URL. Same-origin is NOT assumed in prod: the API lives on
- * api.runnerbox.dpdns.org and the session cookie (rb_session) rides along via
+ * api.simbox.touchtech.club and the session cookie rides along via
  * credentials: "include". In dev, VITE_API_URL is empty (see .env.development)
  * so requests are relative and vite proxies them to `wrangler dev`.
  */
@@ -17,7 +11,7 @@ export const API_URL = import.meta.env.VITE_API_URL ?? PROD_API_URL;
 
 export const GITHUB_APP_INSTALL_URL =
   import.meta.env.VITE_GITHUB_APP_INSTALL_URL ??
-  "https://github.com/apps/runnerbox-touchtechclub/installations/new";
+  "https://github.com/apps/simbox-touchtechclub/installations/new";
 
 export class ApiError extends Error {
   constructor(
@@ -38,7 +32,7 @@ function handleUnauthorized(): void {
   const here = window.location.pathname + window.location.search;
   if (here !== "/" && !here.startsWith("/auth")) {
     try {
-      sessionStorage.setItem("rb_return_to", here);
+      sessionStorage.setItem("simbox_return_to", here);
     } catch {
       /* storage unavailable — fine */
     }
@@ -79,7 +73,7 @@ const post = <T>(path: string, body?: unknown) =>
   });
 
 // ---- Local contract types ----
-// These endpoints' response shapes aren't exported by @runnerbox/shared yet;
+// These endpoints' response shapes aren't exported by @simbox/shared yet;
 // keep the assumptions in one place. Parsing is defensive about field naming.
 
 export interface InstallableRepo {

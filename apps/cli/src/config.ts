@@ -1,26 +1,26 @@
 import { mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
-import { PROD_API_URL } from "@runnerbox/shared";
+import { PROD_API_URL } from "@simbox/shared";
 
-const DEFAULT_WEB_URL = "https://runnerbox.dpdns.org";
+const DEFAULT_WEB_URL = "https://simbox.touchtech.club";
 
 function stripTrailingSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
 export function apiBaseUrl(): string {
-  return stripTrailingSlash(process.env.RUNNERBOX_API_URL ?? PROD_API_URL);
+  return stripTrailingSlash(process.env.SIMBOX_API_URL ?? PROD_API_URL);
 }
 
 export function webBaseUrl(): string {
-  return stripTrailingSlash(process.env.RUNNERBOX_WEB_URL ?? DEFAULT_WEB_URL);
+  return stripTrailingSlash(process.env.SIMBOX_WEB_URL ?? DEFAULT_WEB_URL);
 }
 
 export function configDir(): string {
   const xdg = process.env.XDG_CONFIG_HOME;
-  if (xdg && xdg.length > 0) return join(xdg, "runnerbox");
-  return join(homedir(), ".config", "runnerbox");
+  if (xdg && xdg.length > 0) return join(xdg, "simbox");
+  return join(homedir(), ".config", "simbox");
 }
 
 export function authPath(): string {
@@ -64,7 +64,7 @@ export function saveToken(token: string, login: string): void {
 export function requireToken(): string {
   const token = loadToken();
   if (!token) {
-    process.stderr.write("Not logged in. Run `runnerbox login` first.\n");
+    process.stderr.write("Not logged in. Run `simbox login` first.\n");
     process.exit(1);
   }
   return token;

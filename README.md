@@ -1,4 +1,4 @@
-# RunnerBox
+# Simbox
 
 Free on-demand iOS simulators & Android emulators running on your own GitHub Actions minutes, exposed to your local machine as an `agent-device` remote proxy.
 
@@ -7,20 +7,20 @@ Free on-demand iOS simulators & Android emulators running on your own GitHub Act
 ## How it works
 
 1. Sign in with GitHub on the dashboard, install the GitHub App, pick a repo.
-2. We commit `.github/workflows/runnerbox.yml` to the repo and write a `RUNNERBOX_TOKEN` secret.
-3. `runnerbox sim` asks our API for a run → we `workflow_dispatch` into your repo → a `macos-latest` runner boots `agent-device proxy` + a Cloudflare tunnel → the tunnel URL + daemon token come back to your CLI.
-4. Drive sims/emulators with `agent-device` until the run ends (idle timeout, `runnerbox stop`, or ~6h).
+2. We commit `.github/workflows/simbox.yml` to the repo and write a `SIMBOX_TOKEN` secret.
+3. `simbox sim` asks our API for a run → we `workflow_dispatch` into your repo → a `macos-latest` runner boots `agent-device proxy` + a Cloudflare tunnel → the tunnel URL + daemon token come back to your CLI.
+4. Drive sims/emulators with `agent-device` until the run ends (idle timeout, `simbox stop`, or ~6h).
 
 ## Monorepo
 
 | Path              | What                                                                  |
 | ----------------- | --------------------------------------------------------------------- |
 | `apps/api`        | Cloudflare Worker (Hono + D1 + KV) — auth, repo connect, run registry |
-| `apps/cli`        | `runnerbox` npm package — login/sim/ps/stop/repair                    |
+| `apps/cli`        | `simbox` npm package — login/sim/ps/stop/repair                       |
 | `apps/web`        | TanStack dashboard (Vite + Router + Query) — CF Pages                 |
-| `packages/agent`  | `runnerbox-agent` Bun-compiled binary that runs inside the GH job     |
+| `packages/agent`  | `simbox-agent` Bun-compiled binary that runs inside the GH job        |
 | `packages/shared` | API contracts, constants, canonical workflow YAML                     |
-| `action-src`      | Source of the composite action published to `runnerbox/runner`        |
+| `action-src`      | Source of the composite action published to `TouchTechClub/runner`    |
 
 ## Develop
 

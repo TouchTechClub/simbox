@@ -1,15 +1,15 @@
 {
-  "name": "@runnerbox/agent",
+  "name": "@simbox/agent",
   "version": "0.1.0",
-  "description": "runnerbox-agent — in-runner agent that boots agent-device proxy + cloudflared tunnel on a GitHub Actions macOS runner",
+  "description": "simbox-agent — in-runner agent that boots agent-device proxy + cloudflared tunnel on a GitHub Actions macOS runner",
   "type": "module",
   "scripts": {
-    "build": "bun build --compile --target=bun-darwin-arm64 --minify src/index.ts --outfile dist/runnerbox-agent-darwin-arm64",
+    "build": "bun build --compile --target=bun-darwin-arm64 --minify src/index.ts --outfile dist/simbox-agent-darwin-arm64",
     "typecheck": "tsc --noEmit",
     "start": "bun src/index.ts"
   },
   "dependencies": {
-    "@runnerbox/shared": "workspace:*"
+    "@simbox/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.5.0",

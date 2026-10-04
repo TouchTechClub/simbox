@@ -1,4 +1,4 @@
-# RunnerBox — Deployment Setup
+# Simbox — Deployment Setup
 
 Everything needed to go from this repo to production. Order matters — GitHub App first (it produces most of the env values).
 
@@ -6,17 +6,17 @@ Everything needed to go from this repo to production. Order matters — GitHub A
 
 ## 1. GitHub App
 
-Create at <https://github.com/settings/apps/new> (name suggestion: `runnerbox`).
+Create at <https://github.com/settings/apps/new> (name suggestion: `simbox`).
 
-| Field                                                  | Value                                                                                                |
-| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| Homepage URL                                           | `https://runnerbox.dpdns.org`                                                                        |
-| Callback URL                                           | `https://api.runnerbox.dpdns.org/api/auth/callback/github`                                           |
-| Setup URL                                              | `https://runnerbox.dpdns.org/onboarding` (redirect on install ✓)                                     |
-| Webhook URL                                            | `https://api.runnerbox.dpdns.org/webhooks/github`                                                    |
-| Webhook secret                                         | generate: `openssl rand -hex 32` → `GITHUB_WEBHOOK_SECRET`                                           |
-| Request user authorization (OAuth) during installation | ✓ enabled                                                                                            |
-| Description (markdown, shown on install page)          | Tells users: **install on a NEW, EMPTY repository only** — see `scripts/runnerbox-app-manifest.html` |
+| Field                                                  | Value                                                                                             |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| Homepage URL                                           | `https://simbox.touchtech.club`                                                                   |
+| Callback URL                                           | `https://api.simbox.touchtech.club/api/auth/callback/github`                                      |
+| Setup URL                                              | `https://simbox.touchtech.club/onboarding` (redirect on install ✓)                                |
+| Webhook URL                                            | `https://api.simbox.touchtech.club/webhooks/github`                                               |
+| Webhook secret                                         | generate: `openssl rand -hex 32` → `GITHUB_WEBHOOK_SECRET`                                        |
+| Request user authorization (OAuth) during installation | ✓ enabled                                                                                         |
+| Description (markdown, shown on install page)          | Tells users: **install on a NEW, EMPTY repository only** — see `scripts/simbox-app-manifest.html` |
 
 **Permissions (Repository):**
 
@@ -68,7 +68,7 @@ APP_URL=                        # leave empty for first deploy → set to web UR
 DEMO_MODE=false
 ```
 
-Alchemy provisions automatically: D1 `runnerbox-db` (migrations from `packages/db/migrations` apply on deploy), KV `runnerbox-kv`, Worker `runnerbox-api`, Website `runnerbox-web`.
+Alchemy provisions automatically: D1 `simbox-db` (migrations from `packages/db/migrations` apply on deploy), KV `simbox-kv`, Worker `simbox-api`, Website `simbox-web`.
 
 ```bash
 bun run deploy                   # in packages/infra (or root)
@@ -89,14 +89,14 @@ bun run deploy                   # in packages/infra (or root)
 
 Default deploy lands on `*.workers.dev` / `*.pages.dev`-style URLs. For the real product:
 
-| Domain                    | Points to               |
-| ------------------------- | ----------------------- |
-| `runnerbox.dpdns.org`     | `runnerbox-web` website |
-| `api.runnerbox.dpdns.org` | `runnerbox-api` worker  |
+| Domain                      | Points to            |
+| --------------------------- | -------------------- |
+| `simbox.touchtech.club`     | `simbox-web` website |
+| `api.simbox.touchtech.club` | `simbox-api` worker  |
 
-Add as custom domains in the CF dashboard (or `Cloudflare.Domain` resources in `alchemy.run.ts`), then set `APP_URL=https://runnerbox.dpdns.org` and update `PROD_API_URL` in `packages/shared/src/constants.ts` + `API_URL` var → `https://api.runnerbox.dpdns.org`, redeploy.
+Add as custom domains in the CF dashboard (or `Cloudflare.Domain` resources in `alchemy.run.ts`), then set `APP_URL=https://simbox.touchtech.club` and update `PROD_API_URL` in `packages/shared/src/constants.ts` + `API_URL` var → `https://api.simbox.touchtech.club`, redeploy.
 
-**GitHub App callback + webhook URLs** must match the final API domain — update them in App settings if you add `api.runnerbox.dpdns.org`.
+**GitHub App callback + webhook URLs** must match the final API domain — update them in App settings if you add `api.simbox.touchtech.club`.
 
 ---
 
@@ -104,31 +104,31 @@ Add as custom domains in the CF dashboard (or `Cloudflare.Domain` resources in `
 
 ```bash
 cd apps/cli
-npm publish --access public     # verify the `runnerbox` name is free first
+npm publish --access public     # first publish of @touchtechclub/simbox must be manual (trusted publishing needs the package to exist)
 ```
 
-CLI defaults to `PROD_API_URL`; users can override via `RUNNERBOX_API_URL` / `RUNNERBOX_WEB_URL` env.
+CLI defaults to `PROD_API_URL`; users can override via `SIMBOX_API_URL` / `SIMBOX_WEB_URL` env.
 
 ---
 
 ## 5. Action repo + agent release
 
-The committed workflow uses `runnerbox/runner@v1` — needs a real repo:
+The committed workflow uses `TouchTechClub/runner@v1` — needs a real repo:
 
 ```bash
-# 1. Create github.com/runnerbox/runnerbox, push this monorepo there
-git remote add origin git@github.com:runnerbox/runnerbox.git && git push -u origin main
+# 1. Create github.com/TouchTechClub/simbox, push this monorepo there
+git remote add origin git@github.com:TouchTechClub/simbox.git && git push -u origin main
 
-# 2. Create github.com/runnerbox/runner, push action-src/ contents there
+# 2. Create github.com/TouchTechClub/runner, push action-src/ contents there
 #    (action.yml at repo root), tag it:
 cd action-src && git init && git add -A && git commit -m "v1" \
-  && git remote add origin git@github.com:runnerbox/runner.git && git push -u origin main \
+  && git remote add origin git@github.com:TouchTechClub/runner.git && git push -u origin main \
   && git tag v1 && git push origin v1
 
 # 3. Build + publish the agent release (darwin-arm64 — run on a Mac or macOS CI)
 cd action-src && ./release.sh 1.0.0
 #    → builds packages/agent, tars, computes sha256, re-renders action.yml,
-#      prints gh release commands for runnerbox/runnerbox/releases/tag/v1
+#      prints gh release commands for TouchTechClub/simbox/releases/tag/v1
 ```
 
 ---
@@ -175,20 +175,20 @@ quality (typecheck+lint) → agent build+GH release (macos) → alchemy deploy �
 | `GH_CLIENT_ID` / `GH_CLIENT_SECRET` | app OAuth creds                                                                                                  |
 | `BETTER_AUTH_SECRET`                | `openssl rand -base64 32`                                                                                        |
 
-No PAT needed — the `runner` job mints an installation token via `actions/create-github-app-token` using the app's own creds. **One-time manual step: install the `runnerbox` GitHub App on `TouchTechClub/runner`** so the token can write there.
+No PAT needed — the `runner` job mints an installation token via `actions/create-github-app-token` using the app's own creds. **One-time manual step: install the `simbox` GitHub App on `TouchTechClub/runner`** so the token can write there.
 
 **Variables:**
 
-| Var                     | Value                                                              |
-| ----------------------- | ------------------------------------------------------------------ |
-| `CLOUDFLARE_ACCOUNT_ID` | CF dashboard → account ID                                          |
-| `APP_URL`               | `https://runnerbox.dpdns.org` (or workers.dev URL until DNS lands) |
+| Var                     | Value                                                                |
+| ----------------------- | -------------------------------------------------------------------- |
+| `CLOUDFLARE_ACCOUNT_ID` | CF dashboard → account ID                                            |
+| `APP_URL`               | `https://simbox.touchtech.club` (or workers.dev URL until DNS lands) |
 
 ### npm trusted publisher
 
-npmjs.com → `runnerbox` package → Settings → Trusted Publisher:
+npmjs.com → `@touchtechclub/simbox` package → Settings → Trusted Publisher:
 
-- Org: `TouchTechClub`, repo: `runnerbox`, workflow: `release.yml`, environment: `npm`
+- Org: `TouchTechClub`, repo: `simbox`, workflow: `release.yml`, environment: `npm`
 
 ## Deploy gotchas (hit once, documented)
 
@@ -196,8 +196,8 @@ npmjs.com → `runnerbox` package → Settings → Trusted Publisher:
 - **State-store 401**: `~/.alchemy/credentials/default/cloudflare-state-store.json` must contain `accountId` matching `CLOUDFLARE_ACCOUNT_ID`. Creds minted before `accountId` existed (or for another account) trigger a re-derive that 401s on the state-store worker's refresh endpoint — delete/invalidate them (add `accountId`) or bootstrap fresh.
 - **vite ≥ 8**: `@alchemy.run/cloudflare-runtime` extends `vite.DevEnvironment` (vite 8 only). If `bun install` leaves a stale per-package `vite` symlink in `node_modules/.bun/<pkg>/node_modules/`, delete it and reinstall.
 - **`_redirects`**: don't ship a Pages-style `/* /index.html 200` file — workers static-assets validation rejects it as an infinite loop. `notFoundHandling: "single-page-application"` in `alchemy.run.ts` already provides SPA fallback.
-- **Pinned resource names are load-bearing**: Alchemy's auto-generated physical names embed the deploying OS **username** (plus stage + a random instanceId). Deploying the same stack from a different identity — e.g. `ubuntu` locally vs `runner` in CI — forks a parallel stack: new workers, and a **fresh empty D1/KV**, plus orphaned state records under `runnerbox/live_<user>/`. That's why `alchemy.run.ts` pins `name`/`title` (`runnerbox-api`, `runnerbox-web`, `runnerbox-db`, `runnerbox-kv`) and manages `domain` on the workers. Never unpin or rename them — rename = resource replace (D1 data loss).
-- **Renaming an existing auto-named resource**: the old worker still holds the custom domain, and alchemy refuses to steal it — delete the old worker script first (`DELETE /workers/scripts/:id`), then redeploy. After a _failed_ deploy, `alchemy state` may believe a resource exists that was rolled back; check with `alchemy state read <path>` and `state delete` the stale record before redeploying (hit this with `runnerbox-db`).
+- **Pinned resource names are load-bearing**: Alchemy's auto-generated physical names embed the deploying OS **username** (plus stage + a random instanceId). Deploying the same stack from a different identity — e.g. `ubuntu` locally vs `runner` in CI — forks a parallel stack: new workers, and a **fresh empty D1/KV**, plus orphaned state records under `simbox/live_<user>/`. That's why `alchemy.run.ts` pins `name`/`title` (`simbox-api`, `simbox-web`, `simbox-db`, `simbox-kv`) and manages `domain` on the workers. Never unpin or rename them — rename = resource replace (D1 data loss).
+- **Renaming an existing auto-named resource**: the old worker still holds the custom domain, and alchemy refuses to steal it — delete the old worker script first (`DELETE /workers/scripts/:id`), then redeploy. After a _failed_ deploy, `alchemy state` may believe a resource exists that was rolled back; check with `alchemy state read <path>` and `state delete` the stale record before redeploying (hit this with `simbox-db`).
 
 ---
 

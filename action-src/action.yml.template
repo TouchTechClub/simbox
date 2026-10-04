@@ -1,36 +1,36 @@
-# runnerbox composite action — RENDERED from this template by release.sh.
+# simbox composite action — RENDERED from this template by release.sh.
 # Do not edit action.yml directly; edit this file and run ./release.sh to
 # re-render with the sha256 of the release tarball.
-name: runnerbox
-description: Boot agent-device proxy + cloudflared tunnel on this macOS runner and register it with the runnerbox API.
+name: simbox
+description: Boot agent-device proxy + cloudflared tunnel on this macOS runner and register it with the simbox API.
 branding:
   icon: box
   color: purple
 inputs:
   token:
-    description: RUNNERBOX_TOKEN repo secret, provisioned by runnerbox init.
+    description: SIMBOX_TOKEN repo secret, provisioned by simbox init.
     required: true
   api_url:
-    description: runnerbox API base URL (override for staging).
+    description: simbox API base URL (override for staging).
     required: false
-    default: "https://api.runnerbox.dpdns.org"
+    default: "https://api.simbox.touchtech.club"
   version:
-    description: Release tag of the runnerbox-agent tarball to download.
+    description: Release tag of the simbox-agent tarball to download.
     required: false
     default: "v1"
 runs:
   using: composite
   steps:
-    - name: Run runnerbox-agent
+    - name: Run simbox-agent
       shell: bash
       env:
-        RUNNERBOX_TOKEN: ${{ inputs.token }}
-        RUNNERBOX_API_URL: ${{ inputs.api_url }}
+        SIMBOX_TOKEN: ${{ inputs.token }}
+        SIMBOX_API_URL: ${{ inputs.api_url }}
       run: |
         set -euo pipefail
-        TARBALL=runnerbox-agent-darwin-arm64.tar.gz
-        curl -fsSL "https://github.com/TouchTechClub/runnerbox/releases/download/${{ inputs.version }}/$TARBALL" -o "$TARBALL"
+        TARBALL=simbox-agent-darwin-arm64.tar.gz
+        curl -fsSL "https://github.com/TouchTechClub/simbox/releases/download/${{ inputs.version }}/$TARBALL" -o "$TARBALL"
         echo "{{SHA256}}  $TARBALL" | shasum -a 256 -c -
         tar xzf "$TARBALL"
-        chmod +x ./runnerbox-agent
-        ./runnerbox-agent
+        chmod +x ./simbox-agent
+        ./simbox-agent

@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { and, eq, notInArray } from "drizzle-orm";
-import { createDb, schema } from "@runnerbox/db";
-import type { RepoStatusResponse } from "@runnerbox/shared";
+import { createDb, schema } from "@simbox/db";
+import type { RepoStatusResponse } from "@simbox/shared";
 import type { AppContext } from "../middleware";
 import { requireUser } from "../middleware";
 import { getLatestActiveRun, getRepoForUser } from "../db";
@@ -9,13 +9,13 @@ import { apiError, nowSeconds, randomTokenHex, sha256Hex, toPublicRepo } from ".
 import {
   cancelWorkflowRun,
   commitWorkflow,
-  deleteRunnerboxTokenSecret,
+  deleteSimboxTokenSecret,
   deleteWorkflowFile,
   gh,
   GithubApiError,
   installationToken,
   workflowFileExists,
-  writeRunnerboxTokenSecret,
+  writeSimboxTokenSecret,
 } from "../github";
 
 export const repoRoutes = new Hono<AppContext>();
@@ -114,9 +114,9 @@ repoRoutes.post("/v1/repo/connect", async (c) => {
   const instToken = await installationToken(c.env, body.installation_id);
 
   // 1. Secret first — a workflow without its secret would fail on first dispatch.
-  const runnerboxToken = randomTokenHex();
+  const simboxToken = randomTokenHex();
   try {
-    await writeRunnerboxTokenSecret(instToken, body.full_name, runnerboxToken);
+    await writeSimboxTokenSecret(instToken, body.full_name, simboxToken);
   } catch (e) {
     if (e instanceof GithubApiError && (e.status === 404 || e.status === 410 || e.status === 403)) {
       return apiError(
@@ -181,7 +181,7 @@ repoRoutes.post("/v1/repo/connect", async (c) => {
     installation_id: body.installation_id,
     state,
     pr_url: prUrl,
-    runnerbox_token_hash: await sha256Hex(runnerboxToken),
+    simbox_token_hash: await sha256Hex(simboxToken),
     created_at: now,
   });
 
@@ -232,7 +232,7 @@ repoRoutes.get("/v1/repo/status", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// POST /v1/repo/repair — rotate RUNNERBOX_TOKEN + re-commit workflow.
+// POST /v1/repo/repair — rotate SIMBOX_TOKEN + re-commit workflow.
 // ---------------------------------------------------------------------------
 
 repoRoutes.post("/v1/repo/repair", async (c) => {
@@ -262,8 +262,8 @@ repoRoutes.post("/v1/repo/repair", async (c) => {
     throw e;
   }
 
-  const runnerboxToken = randomTokenHex();
-  await writeRunnerboxTokenSecret(instToken, repo.full_name, runnerboxToken);
+  const simboxToken = randomTokenHex();
+  await writeSimboxTokenSecret(instToken, repo.full_name, simboxToken);
 
   let state: "ok" | "pending_pr" = "ok";
   let prUrl: string | null = null;
@@ -278,7 +278,7 @@ repoRoutes.post("/v1/repo/repair", async (c) => {
     .set({
       state,
       pr_url: prUrl,
-      runnerbox_token_hash: await sha256Hex(runnerboxToken),
+      simbox_token_hash: await sha256Hex(simboxToken),
     })
     .where(eq(schema.repos.user_id, user.id));
 
@@ -310,7 +310,7 @@ repoRoutes.post("/v1/repo/disconnect", async (c) => {
       await cancelWorkflowRun(instToken, repo.full_name, activeRun.gh_run_id).catch(() => {});
     }
     await deleteWorkflowFile(instToken, repo.full_name, repo.default_branch).catch(() => {});
-    await deleteRunnerboxTokenSecret(instToken, repo.full_name).catch(() => {});
+    await deleteSimboxTokenSecret(instToken, repo.full_name).catch(() => {});
   } catch {
     // Swallow — repo row is removed regardless.
   }

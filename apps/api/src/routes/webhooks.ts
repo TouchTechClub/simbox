@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { and, desc, eq, isNull } from "drizzle-orm";
-import { createDb, schema } from "@runnerbox/db";
+import { createDb, schema } from "@simbox/db";
 import type { Env } from "../env";
 import { nowSeconds } from "../util";
 import { verifyWebhookSignature } from "../github";

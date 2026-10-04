@@ -77,7 +77,7 @@ CREATE TABLE `repos` (
 	`installation_id` integer NOT NULL,
 	`state` text DEFAULT 'ok' NOT NULL,
 	`pr_url` text,
-	`runnerbox_token_hash` text,
+	`simbox_token_hash` text,
 	`created_at` integer NOT NULL,
 	CONSTRAINT `fk_repos_user_id_user_id_fk` FOREIGN KEY (`user_id`) REFERENCES `user`(`id`)
 );
@@ -106,5 +106,5 @@ CREATE UNIQUE INDEX `deviceCode_deviceCode_uidx` ON `device_code` (`device_code`
 CREATE UNIQUE INDEX `deviceCode_userCode_uidx` ON `device_code` (`user_code`);--> statement-breakpoint
 CREATE INDEX `session_userId_idx` ON `session` (`user_id`);--> statement-breakpoint
 CREATE INDEX `verification_identifier_idx` ON `verification` (`identifier`);--> statement-breakpoint
-CREATE INDEX `idx_repos_token_hash` ON `repos` (`runnerbox_token_hash`);--> statement-breakpoint
+CREATE INDEX `idx_repos_token_hash` ON `repos` (`simbox_token_hash`);--> statement-breakpoint
 CREATE INDEX `idx_runs_user_created` ON `runs` (`user_id`,"created_at" desc);

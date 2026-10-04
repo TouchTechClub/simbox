@@ -1,12 +1,8 @@
 /**
- * Thin client for the runnerbox API — everything is POST + Bearer RUNNERBOX_TOKEN.
- * Contracts come from @runnerbox/shared.
+ * Thin client for the simbox API — everything is POST + Bearer SIMBOX_TOKEN.
+ * Contracts come from @simbox/shared.
  */
-import type {
-  RunDeregisterRequest,
-  RunHeartbeatRequest,
-  RunRegisterRequest,
-} from "@runnerbox/shared";
+import type { RunDeregisterRequest, RunHeartbeatRequest, RunRegisterRequest } from "@simbox/shared";
 
 export class HttpError extends Error {
   constructor(

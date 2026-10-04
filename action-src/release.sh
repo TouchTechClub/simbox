@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# release.sh — build the runnerbox-agent binary, package the release tarball,
+# release.sh — build the simbox-agent binary, package the release tarball,
 # compute its sha256, re-render action.yml from action.yml.template, and print
 # the `gh release` commands to publish.
 #
@@ -22,18 +22,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 AGENT_DIR="$REPO_ROOT/packages/agent"
 OUT_DIR="$REPO_ROOT/dist-release"
-TARBALL_NAME="runnerbox-agent-darwin-arm64.tar.gz"
+TARBALL_NAME="simbox-agent-darwin-arm64.tar.gz"
 TARBALL="$OUT_DIR/$TARBALL_NAME"
-BIN_NAME="runnerbox-agent"   # name inside the tarball — action.yml untars + runs ./runnerbox-agent
+BIN_NAME="simbox-agent"   # name inside the tarball — action.yml untars + runs ./simbox-agent
 
-echo "==> Building @runnerbox/agent ($TAG)"
-bun run --cwd "$AGENT_DIR" build   # → packages/agent/dist/runnerbox-agent-darwin-arm64
+echo "==> Building @simbox/agent ($TAG)"
+bun run --cwd "$AGENT_DIR" build   # → packages/agent/dist/simbox-agent-darwin-arm64
 
 echo "==> Packaging $TARBALL_NAME"
 mkdir -p "$OUT_DIR"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
-cp "$AGENT_DIR/dist/runnerbox-agent-darwin-arm64" "$STAGE/$BIN_NAME"
+cp "$AGENT_DIR/dist/simbox-agent-darwin-arm64" "$STAGE/$BIN_NAME"
 chmod +x "$STAGE/$BIN_NAME"
 tar -czf "$TARBALL" -C "$STAGE" "$BIN_NAME"
 
@@ -62,16 +62,16 @@ rm "$SCRIPT_DIR/action.yml.tmp"
 
 echo ""
 echo "Done. Next steps:"
-echo "  1. Publish this directory to the runnerbox/runner repo and tag it:"
+echo "  1. Publish this directory to the TouchTechClub/runner repo and tag it:"
 echo "       rsync -a --delete $SCRIPT_DIR/ /path/to/runner/"
-echo "       cd /path/to/runner && git add -A && git commit -m 'runnerbox $TAG'"
+echo "       cd /path/to/runner && git add -A && git commit -m 'simbox $TAG'"
 echo "       git tag -f v1 && git tag $TAG && git push --tags -f origin v1 $TAG"
-echo "  2. Create the release in runnerbox/runnerbox and upload the tarball:"
+echo "  2. Create the release in TouchTechClub/simbox and upload the tarball:"
 echo "       gh release create $TAG $TARBALL \\"
-echo "         --repo runnerbox/runnerbox \\"
-echo "         --title 'runnerbox-agent $TAG' \\"
-echo "         --notes 'runnerbox-agent darwin-arm64 · sha256 $SHA'"
+echo "         --repo TouchTechClub/simbox \\"
+echo "         --title 'simbox-agent $TAG' \\"
+echo "         --notes 'simbox-agent darwin-arm64 · sha256 $SHA'"
 echo "     (or upload to an existing release:)"
-echo "       gh release upload $TAG $TARBALL --repo runnerbox/runnerbox --clobber"
+echo "       gh release upload $TAG $TARBALL --repo TouchTechClub/simbox --clobber"
 echo ""
 echo "Verify: $SHA  $TARBALL"

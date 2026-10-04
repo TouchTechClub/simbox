@@ -1,6 +1,6 @@
-import type { Database } from "@runnerbox/db";
-import { schema } from "@runnerbox/db";
-import type { RunState } from "@runnerbox/shared";
+import type { Database } from "@simbox/db";
+import { schema } from "@simbox/db";
+import type { RunState } from "@simbox/shared";
 import { and, desc, eq, notInArray } from "drizzle-orm";
 
 const { account, repos, runs, installations } = schema;
@@ -75,6 +75,6 @@ export async function getLatestActiveRun(db: Database, userId: string): Promise<
 }
 
 export async function getRepoByTokenHash(db: Database, tokenHash: string): Promise<RepoRow | null> {
-  const row = await db.select().from(repos).where(eq(repos.runnerbox_token_hash, tokenHash)).get();
+  const row = await db.select().from(repos).where(eq(repos.simbox_token_hash, tokenHash)).get();
   return row ?? null;
 }

@@ -25,7 +25,7 @@ export function relay(prefix: string, line: string, secretLine?: boolean): void 
 }
 
 export function info(msg: string): void {
-  console.log(`[runnerbox] ${msg}`);
+  console.log(`[simbox] ${msg}`);
 }
 
 export function warn(msg: string): void {

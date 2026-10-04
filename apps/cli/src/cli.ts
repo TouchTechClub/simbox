@@ -8,7 +8,7 @@ import { cmdInit, cmdLogin, cmdLogout, cmdPs, cmdRepair, cmdSim, cmdStop } from 
 const program = new Command();
 
 program
-  .name("runnerbox")
+  .name("simbox")
   .description("On-demand iOS simulators & Android emulators on your own GitHub Actions minutes.")
   .version("0.1.0");
 

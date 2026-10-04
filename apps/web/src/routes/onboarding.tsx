@@ -104,14 +104,14 @@ function InstallAndPick({ onPicked }: { onPicked: () => void }) {
           <CardHeader className="relative">
             <CardTitle>Install the GitHub App</CardTitle>
             <CardDescription>
-              RunnerBox commits one workflow file and one secret to a repo you choose. Install the
-              app, grant access to a repo, and it will appear here automatically.
+              Simbox commits one workflow file and one secret to a repo you choose. Install the app,
+              grant access to a repo, and it will appear here automatically.
             </CardDescription>
           </CardHeader>
           <CardContent className="relative flex flex-col gap-4">
             <div>
               <Button asChild>
-                <a href={GITHUB_APP_INSTALL_URL}>Install the RunnerBox GitHub App</a>
+                <a href={GITHUB_APP_INSTALL_URL}>Install the Simbox GitHub App</a>
               </Button>
             </div>
             <p className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -125,7 +125,7 @@ function InstallAndPick({ onPicked }: { onPicked: () => void }) {
           <CardHeader>
             <CardTitle>Pick a repository</CardTitle>
             <CardDescription>
-              RunnerBox runs entirely inside one repo&apos;s Actions. One repo per account.
+              Simbox runs entirely inside one repo&apos;s Actions. One repo per account.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
@@ -235,14 +235,12 @@ function Progress() {
           </CardHeader>
           <CardContent>
             <ul className="flex flex-col gap-2.5 text-sm">
-              {["Committing runnerbox.yml workflow", "Writing RUNNERBOX_TOKEN secret"].map(
-                (label) => (
-                  <li key={label} className="flex items-center gap-2.5 text-muted-foreground">
-                    <Loader2 className="size-4 animate-spin text-primary" />
-                    {label}
-                  </li>
-                ),
-              )}
+              {["Committing simbox.yml workflow", "Writing SIMBOX_TOKEN secret"].map((label) => (
+                <li key={label} className="flex items-center gap-2.5 text-muted-foreground">
+                  <Loader2 className="size-4 animate-spin text-primary" />
+                  {label}
+                </li>
+              ))}
             </ul>
           </CardContent>
         </Card>
@@ -270,7 +268,7 @@ function Progress() {
                 label: "Workflow committed to default branch",
                 done: ok || repo.state === "pending_pr",
               },
-              { label: "RUNNERBOX_TOKEN secret written", done: ok || repo.state === "pending_pr" },
+              { label: "SIMBOX_TOKEN secret written", done: ok || repo.state === "pending_pr" },
               { label: "Installation verified", done: ok },
             ].map((item) => (
               <li
@@ -294,8 +292,8 @@ function Progress() {
             <Notice variant="warning">
               <TriangleAlert />
               <span>
-                Your default branch is protected, so RunnerBox opened a pull request with the
-                workflow file.{" "}
+                Your default branch is protected, so Simbox opened a pull request with the workflow
+                file.{" "}
                 {repo.prUrl ? (
                   <a
                     href={repo.prUrl}
@@ -320,17 +318,17 @@ function Progress() {
               <Notice variant="info">
                 <CheckCircle2 className="text-primary" />
                 <span>
-                  Connected. The <code className="font-mono">runnerbox.yml</code> workflow is on
-                  your default branch and the <code className="font-mono">RUNNERBOX_TOKEN</code>{" "}
-                  secret is set.
+                  Connected. The <code className="font-mono">simbox.yml</code> workflow is on your
+                  default branch and the <code className="font-mono">SIMBOX_TOKEN</code> secret is
+                  set.
                 </span>
               </Notice>
               <div className="flex flex-col gap-2">
                 <p className="text-sm text-muted-foreground">Get a simulator from your terminal:</p>
                 <Terminal title="your machine">
-                  <TermLine prompt>npm i -g runnerbox</TermLine>
-                  <TermLine prompt>runnerbox login</TermLine>
-                  <TermLine prompt>runnerbox sim</TermLine>
+                  <TermLine prompt>npm i -g @touchtechclub/simbox</TermLine>
+                  <TermLine prompt>simbox login</TermLine>
+                  <TermLine prompt>simbox sim</TermLine>
                 </Terminal>
               </div>
               <div className="flex items-center justify-between gap-3">
@@ -387,7 +385,7 @@ function Onboarding() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Set up RunnerBox</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Set up Simbox</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Connect a repository — your sims run on its GitHub Actions minutes.
         </p>

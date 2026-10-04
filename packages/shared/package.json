@@ -1,5 +1,5 @@
 {
-  "name": "@runnerbox/shared",
+  "name": "@simbox/shared",
   "version": "0.1.0",
   "type": "module",
   "exports": {

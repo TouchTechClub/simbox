@@ -3,7 +3,7 @@ import {
   WORKFLOW_COMMIT_MESSAGE,
   WORKFLOW_PATH,
   WORKFLOW_YAML,
-} from "@runnerbox/shared";
+} from "@simbox/shared";
 import { sealedBox } from "./sealedbox";
 import type { Env } from "./env";
 import {
@@ -85,7 +85,7 @@ export async function gh<T>(token: string, path: string, opts: GhFetchOptions = 
       Authorization: `Bearer ${token}`,
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": "runnerbox-api",
+      "User-Agent": "simbox-api",
       ...(opts.body !== undefined ? { "Content-Type": "application/json" } : {}),
     },
     ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
@@ -157,7 +157,7 @@ interface PullResponse {
 
 export type CommitResult = { kind: "committed" } | { kind: "pending_pr"; prUrl: string };
 
-const SETUP_BRANCH = "runnerbox-setup";
+const SETUP_BRANCH = "simbox-setup";
 
 async function putWorkflowFile(
   token: string,
@@ -191,7 +191,7 @@ async function getFileSha(token: string, fullName: string, branch: string): Prom
 
 /**
  * Commit the canonical workflow to the default branch. On a protected branch
- * (403), fall back to a `runnerbox-setup` branch + PR; caller marks the repo
+ * (403), fall back to a `simbox-setup` branch + PR; caller marks the repo
  * `pending_pr` and stores the returned pr_url.
  */
 export async function commitWorkflow(
@@ -227,10 +227,10 @@ export async function commitWorkflow(
   const pr = await gh<PullResponse>(token, `/repos/${fullName}/pulls`, {
     method: "POST",
     body: {
-      title: "Add RunnerBox workflow",
+      title: "Add Simbox workflow",
       head: SETUP_BRANCH,
       base: defaultBranch,
-      body: "Adds `.github/workflows/runnerbox.yml` so RunnerBox can run iOS/Android emulators on this repo's GitHub Actions minutes. Merge to finish setup.",
+      body: "Adds `.github/workflows/simbox.yml` so Simbox can run iOS/Android emulators on this repo's GitHub Actions minutes. Merge to finish setup.",
     },
   });
   return { kind: "pending_pr", prUrl: pr.html_url };
@@ -256,7 +256,7 @@ export async function deleteWorkflowFile(
   await gh<unknown>(token, `/repos/${fullName}/contents/${WORKFLOW_PATH}`, {
     method: "DELETE",
     body: {
-      message: "chore: remove runnerbox workflow",
+      message: "chore: remove simbox workflow",
       sha,
       branch: defaultBranch,
     },
@@ -264,10 +264,10 @@ export async function deleteWorkflowFile(
 }
 
 // ---------------------------------------------------------------------------
-// RUNNERBOX_TOKEN repo secret — libsodium-compatible sealed box (see sealedbox.ts).
+// SIMBOX_TOKEN repo secret — libsodium-compatible sealed box (see sealedbox.ts).
 // ---------------------------------------------------------------------------
 
-export async function writeRunnerboxTokenSecret(
+export async function writeSimboxTokenSecret(
   token: string,
   fullName: string,
   secretValue: string,
@@ -283,7 +283,7 @@ export async function writeRunnerboxTokenSecret(
       Authorization: `Bearer ${token}`,
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": "runnerbox-api",
+      "User-Agent": "simbox-api",
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -300,7 +300,7 @@ export async function writeRunnerboxTokenSecret(
   }
 }
 
-export async function deleteRunnerboxTokenSecret(token: string, fullName: string): Promise<void> {
+export async function deleteSimboxTokenSecret(token: string, fullName: string): Promise<void> {
   try {
     await gh<unknown>(token, `/repos/${fullName}/actions/secrets/${REPO_SECRET_NAME}`, {
       method: "DELETE",
@@ -320,7 +320,7 @@ export async function dispatchWorkflow(
   ref: string,
 ): Promise<void> {
   // The workflow file is addressed by path, per the REST API.
-  await gh<unknown>(token, `/repos/${fullName}/actions/workflows/runnerbox.yml/dispatches`, {
+  await gh<unknown>(token, `/repos/${fullName}/actions/workflows/simbox.yml/dispatches`, {
     method: "POST",
     body: { ref },
   });
@@ -348,7 +348,7 @@ export async function bindGhRunId(
     if (i > 0) await sleep(3000);
     const res = await gh<WorkflowRunsResponse>(
       token,
-      `/repos/${fullName}/actions/workflows/runnerbox.yml/runs?event=workflow_dispatch&created=${encodeURIComponent(`>=${iso}`)}&per_page=5`,
+      `/repos/${fullName}/actions/workflows/simbox.yml/runs?event=workflow_dispatch&created=${encodeURIComponent(`>=${iso}`)}&per_page=5`,
     );
     const run = res.workflow_runs[0];
     if (run) return run.id;

@@ -1,14 +1,14 @@
 {
-  "name": "runnerbox",
+  "name": "@touchtechclub/simbox",
   "version": "0.1.7",
   "description": "On-demand iOS simulators & Android emulators on your own GitHub Actions minutes.",
   "repository": {
     "type": "git",
-    "url": "https://github.com/TouchTechClub/runnerbox",
+    "url": "https://github.com/TouchTechClub/simbox",
     "directory": "apps/cli"
   },
   "bin": {
-    "runnerbox": "dist/cli.js"
+    "simbox": "dist/cli.js"
   },
   "files": [
     "dist"
@@ -28,7 +28,7 @@
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
-    "@runnerbox/shared": "*",
+    "@simbox/shared": "*",
     "@types/node": "^20.0.0",
     "typescript": "catalog:"
   },

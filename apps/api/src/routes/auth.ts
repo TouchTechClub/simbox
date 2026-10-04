@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { createDb } from "@runnerbox/db";
+import { createDb } from "@simbox/db";
 import type { AppContext } from "../middleware";
 import type { RepoRow } from "../db";
 import { getRepoForUser } from "../db";

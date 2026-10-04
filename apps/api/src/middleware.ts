@@ -1,5 +1,5 @@
 import { createMiddleware } from "hono/factory";
-import { createDb } from "@runnerbox/db";
+import { createDb } from "@simbox/db";
 import type { Env } from "./env";
 import type { AuthUser, RepoRow } from "./db";
 import { getGithubAccount, getRepoByTokenHash } from "./db";
@@ -41,7 +41,7 @@ export const requireUser = createMiddleware<AppContext>(async (c, next) => {
   const auth = createAuth(c.env);
   const session = await auth.api.getSession({ headers: c.req.raw.headers }).catch(() => null);
   if (!session) {
-    return apiError(c, 401, "unauthorized", "Sign in via the web app or `runnerbox login`.");
+    return apiError(c, 401, "unauthorized", "Sign in via the web app or `simbox login`.");
   }
 
   const account = await getGithubAccount(createDb(c.env), session.user.id);
@@ -59,15 +59,15 @@ export const requireUser = createMiddleware<AppContext>(async (c, next) => {
 });
 
 /**
- * Authenticates the in-runner agent: Bearer RUNNERBOX_TOKEN → sha256 →
- * repos.runnerbox_token_hash. On success `repo` is set on the context.
+ * Authenticates the in-runner agent: Bearer SIMBOX_TOKEN → sha256 →
+ * repos.simbox_token_hash. On success `repo` is set on the context.
  * (Runner tokens are not user auth — unchanged from hand-rolled auth.)
  */
 export const requireRunnerToken = createMiddleware<AppContext>(async (c, next) => {
   const auth = c.req.header("Authorization");
   const token = auth?.startsWith("Bearer ") ? auth.slice(7).trim() : "";
   if (!token) {
-    return apiError(c, 401, "unauthorized", "Missing RUNNERBOX_TOKEN bearer.");
+    return apiError(c, 401, "unauthorized", "Missing SIMBOX_TOKEN bearer.");
   }
   const repo = await getRepoByTokenHash(createDb(c.env), await sha256Hex(token));
   if (!repo) {
@@ -93,7 +93,7 @@ async function seedDemo(env: Env): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   // Fake repo + one live run with a tunnel/token so the dashboard renders
   // its full "live" state. Tunnel URL/token are obviously fake.
-  const { repos, runs, user } = await import("@runnerbox/db/schema");
+  const { repos, runs, user } = await import("@simbox/db/schema");
   // repos.user_id FKs to better-auth's "user" table — seed a demo user first.
   const ms = Date.now();
   await db
@@ -101,7 +101,7 @@ async function seedDemo(env: Env): Promise<void> {
     .values({
       id: DEMO_USER_ID,
       name: "demo-user",
-      email: "demo@runnerbox.dpdns.org",
+      email: "demo@simbox.touchtech.club",
       emailVerified: true,
       image: "https://avatars.githubusercontent.com/u/9919?v=4",
       login: "demo-user",
@@ -119,7 +119,7 @@ async function seedDemo(env: Env): Promise<void> {
       default_branch: "main",
       installation_id: 900001,
       state: "ok",
-      runnerbox_token_hash: "demo",
+      simbox_token_hash: "demo",
       created_at: now - 86400 * 3,
     })
     .onConflictDoNothing();

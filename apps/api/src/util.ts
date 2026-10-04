@@ -1,6 +1,6 @@
 import type { Context, Env as HonoEnv } from "hono";
 import type { AuthUser, RepoRow, RunRow } from "./db";
-import type { ApiError, PublicRun, Repo, RunSummary, User } from "@runnerbox/shared";
+import type { ApiError, PublicRun, Repo, RunSummary, User } from "@simbox/shared";
 
 export function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
@@ -14,7 +14,7 @@ export function newId(): string {
   return crypto.randomUUID();
 }
 
-/** 32 random bytes, hex — used for RUNNERBOX_TOKEN and CLI bearer tokens. */
+/** 32 random bytes, hex — used for SIMBOX_TOKEN and CLI bearer tokens. */
 export function randomTokenHex(bytes = 32): string {
   return bytesToHex(crypto.getRandomValues(new Uint8Array(bytes)));
 }

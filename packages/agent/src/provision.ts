@@ -12,8 +12,8 @@ import { run, which } from "./proc.js";
 
 /** Directory the agent uses for downloaded binaries. */
 export function binDir(): string {
-  const base = Bun.env.RUNNER_TEMP ?? join(tmpdir(), "runnerbox");
-  return join(base, "runnerbox-bin");
+  const base = Bun.env.RUNNER_TEMP ?? join(tmpdir(), "simbox");
+  return join(base, "simbox-bin");
 }
 
 /**
@@ -178,7 +178,7 @@ export async function prepareAndroid(setReady: () => void): Promise<void> {
         "create",
         "avd",
         "-n",
-        "runnerbox",
+        "simbox",
         "-k",
         PINS.androidSystemImage,
         "-d",
@@ -191,7 +191,7 @@ export async function prepareAndroid(setReady: () => void): Promise<void> {
       warn(`avdmanager create avd exited ${avd.code}: ${avd.stderr.trim().slice(0, 300)}`);
       return;
     }
-    info("AVD 'runnerbox' created — Android ready");
+    info("AVD 'simbox' created — Android ready");
     setReady();
   } catch (err) {
     warn(`Android prep failed (non-fatal): ${String(err).slice(0, 300)}`);

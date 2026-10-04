@@ -16,7 +16,7 @@ function AuthPanel() {
         <span className="flex size-7 items-center justify-center rounded-md border border-border bg-background">
           <TerminalSquare className="size-4 text-primary" />
         </span>
-        <span className="font-mono tracking-tight">runnerbox</span>
+        <span className="font-mono tracking-tight">simbox</span>
       </div>
 
       <div className="relative max-w-md">
@@ -28,8 +28,8 @@ function AuthPanel() {
           machine, and tears itself down when you&apos;re done. Public repos cost nothing.
         </p>
 
-        <Terminal className="mt-8 shadow-xl" title="runnerbox — zsh">
-          <TermLine prompt>runnerbox sim</TermLine>
+        <Terminal className="mt-8 shadow-xl" title="simbox — zsh">
+          <TermLine prompt>simbox sim</TermLine>
           <TermLine comment># dispatching → queued → booting → live (2m 41s)</TermLine>
           <TermLine>
             tunnel <span className="text-zinc-500">https://…trycloudflare.com</span>
@@ -59,10 +59,10 @@ function Landing() {
             <span className="flex size-7 items-center justify-center rounded-md border border-border bg-muted">
               <TerminalSquare className="size-4 text-primary" />
             </span>
-            <span className="font-mono tracking-tight">runnerbox</span>
+            <span className="font-mono tracking-tight">simbox</span>
           </div>
 
-          <h2 className="text-xl font-semibold tracking-tight">Sign in to RunnerBox</h2>
+          <h2 className="text-xl font-semibold tracking-tight">Sign in to Simbox</h2>
           <p className="mt-1.5 text-sm text-muted-foreground">
             Use the GitHub account that owns the repo your sims will run in.
           </p>
@@ -84,7 +84,7 @@ function Landing() {
           </Button>
 
           <p className="mt-6 text-xs leading-relaxed text-muted-foreground">
-            Powered by the RunnerBox GitHub App — it requests{" "}
+            Powered by the Simbox GitHub App — it requests{" "}
             <span className="font-mono">contents</span>, <span className="font-mono">secrets</span>{" "}
             and <span className="font-mono">actions</span> access on repos you install it to.
           </p>
@@ -107,8 +107,8 @@ export const indexRoute = createRoute({
     }
     let back: string | null = null;
     try {
-      back = sessionStorage.getItem("rb_return_to");
-      sessionStorage.removeItem("rb_return_to");
+      back = sessionStorage.getItem("simbox_return_to");
+      sessionStorage.removeItem("simbox_return_to");
     } catch {
       /* ignore */
     }

@@ -25,7 +25,7 @@ export function findAgentDevice(): string | null {
  * NOTE: `agent-device connect proxy` persists its own profile (base URL +
  * token) internally. We deliberately do NOT write to its config file —
  * agent-device's schema rejects unknown top-level keys, and our earlier
- * `runnerbox` namespacing broke subsequent `connect` calls with
+ * `simbox` namespacing broke subsequent `connect` calls with
  * "Unknown config key". The manual fallback export line printed below is the
  * supported way to reuse the token across shells.
  */

@@ -1,5 +1,5 @@
 {
-  "name": "@runnerbox/db",
+  "name": "@simbox/db",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -14,7 +14,7 @@
     "db:migrate:deploy": "drizzle-kit migrate"
   },
   "dependencies": {
-    "@runnerbox/shared": "*",
+    "@simbox/shared": "*",
     "drizzle-orm": "catalog:"
   },
   "devDependencies": {

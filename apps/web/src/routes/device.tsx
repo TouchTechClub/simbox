@@ -72,20 +72,18 @@ function DevicePage() {
         <CardHeader>
           <div className="mb-2 flex items-center gap-2 font-mono text-sm font-semibold">
             <TerminalSquare className="size-4 text-primary" />
-            runnerbox
+            simbox
           </div>
           <CardTitle>Authorize CLI</CardTitle>
-          <CardDescription>
-            A device is asking to sign in to your RunnerBox account.
-          </CardDescription>
+          <CardDescription>A device is asking to sign in to your Simbox account.</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {!user_code ? (
             <Notice variant="destructive">
               <CircleAlert />
               <span>
-                Missing device code. Run <code className="font-mono">runnerbox login</code> again
-                and open the link it prints.
+                Missing device code. Run <code className="font-mono">simbox login</code> again and
+                open the link it prints.
               </span>
             </Notice>
           ) : phase === "claiming" ? (
@@ -102,7 +100,7 @@ function DevicePage() {
                 <ShieldAlert />
                 <span>
                   Only approve if <strong>you</strong> just ran{" "}
-                  <code className="font-mono">runnerbox login</code> and this code matches your
+                  <code className="font-mono">simbox login</code> and this code matches your
                   terminal. Never approve a code someone else gave you.
                 </span>
               </Notice>
@@ -140,7 +138,7 @@ function DevicePage() {
               <CircleAlert />
               <span>
                 {error ?? "Something went wrong."} The code may have expired — run{" "}
-                <code className="font-mono">runnerbox login</code> again.
+                <code className="font-mono">simbox login</code> again.
               </span>
             </Notice>
           )}

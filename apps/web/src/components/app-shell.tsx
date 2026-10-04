@@ -41,8 +41,8 @@ import { useMe } from "@/lib/hooks";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
-const DOCS_URL = "https://github.com/runnerbox/runnerbox#readme";
-const REPO_URL = "https://github.com/runnerbox/runnerbox";
+const DOCS_URL = "https://github.com/TouchTechClub/simbox#readme";
+const REPO_URL = "https://github.com/TouchTechClub/simbox";
 
 function Logo({ className }: { className?: string }) {
   return (
@@ -50,7 +50,7 @@ function Logo({ className }: { className?: string }) {
       <span className="flex size-6 items-center justify-center rounded-md border border-border bg-muted">
         <TerminalSquare className="size-3.5 text-primary" />
       </span>
-      <span className="font-mono text-sm tracking-tight">runnerbox</span>
+      <span className="font-mono text-sm tracking-tight">simbox</span>
     </Link>
   );
 }
@@ -200,7 +200,7 @@ export function AppShell({ crumb, children }: { crumb: string; children: ReactNo
             aria-label="breadcrumb"
             className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground"
           >
-            <span className="hidden lg:inline">runnerbox</span>
+            <span className="hidden lg:inline">simbox</span>
             <ChevronRight className="hidden size-3 lg:inline" />
             <span className="text-foreground">{crumb}</span>
           </nav>

@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+  <body>
+    <p>Creating the simbox GitHub App… (auto-submitting)</p>
+    <form id="f" method="post" action="https://github.com/settings/apps/new">
+      <input type="hidden" name="manifest" id="m" />
+    </form>
+    <script>
+      const manifest = {
+        name: "simbox",
+        url: "https://simbox.touchtech.club",
+        description:
+          "Boot free iOS simulators & Android emulators on your own GitHub Actions minutes, exposed to your machine as an `agent-device` remote proxy.\n\n**Install this app on a NEW, EMPTY repository only.** Simbox commits a workflow file and writes a secret to the repo — a dedicated repo keeps your real projects clean and avoids surprises on protected branches.",
+        hook_attributes: {
+          url: "https://api.simbox.touchtech.club/webhooks/github",
+          active: true,
+        },
+        redirect_url: "https://api.simbox.touchtech.club/healthz",
+        callback_urls: ["https://api.simbox.touchtech.club/api/auth/callback/github"],
+        setup_url: "https://simbox.touchtech.club/onboarding",
+        setup_on_update: true,
+        public: true,
+        default_permissions: {
+          contents: "write",
+          workflows: "write",
+          actions: "write",
+          secrets: "write",
+          metadata: "read",
+        },
+        default_events: ["workflow_run"],
+        request_oauth_on_install: true,
+      };
+      document.getElementById("m").value = JSON.stringify(manifest);
+      document.getElementById("f").submit();
+    </script>
+  </body>
+</html>

@@ -45,7 +45,7 @@ import {
 } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { appRoute } from "./app";
-import type { PublicRun } from "@runnerbox/shared/types";
+import type { PublicRun } from "@simbox/shared/types";
 
 const STARTING_STATES = new Set(["dispatching", "queued", "booting", "closing"]);
 
@@ -87,7 +87,7 @@ function Toolbar() {
 
   const copySim = async () => {
     try {
-      await navigator.clipboard.writeText("runnerbox sim");
+      await navigator.clipboard.writeText("simbox sim");
       setCopied(true);
       setTimeout(() => setCopied(false), 2_000);
     } catch {
@@ -105,7 +105,7 @@ function Toolbar() {
             onClick={() => void copySim()}
           >
             {copied ? <Check className="size-3.5 text-primary" /> : <Copy className="size-3.5" />}
-            runnerbox sim
+            simbox sim
           </TooltipTrigger>
           <TooltipContent>Copy command</TooltipContent>
         </Tooltip>
@@ -282,7 +282,7 @@ function RepoPanel() {
         open={confirmDisconnect}
         onOpenChange={setConfirmDisconnect}
         title={`Disconnect ${repo.fullName}?`}
-        body="This removes the runnerbox workflow and RUNNERBOX_TOKEN secret, cancels any live run, and frees your repo slot. You can reconnect later."
+        body="This removes the simbox workflow and SIMBOX_TOKEN secret, cancels any live run, and frees your repo slot. You can reconnect later."
         confirmLabel="Disconnect"
         busy={disconnect.isPending}
         onConfirm={() =>
@@ -314,13 +314,13 @@ function GettingStartedPanel() {
           <li className="flex gap-2.5">
             <span className="font-mono text-xs text-primary">2.</span>
             <span>
-              <code className="font-mono text-foreground">npm i -g runnerbox</code> &amp;{" "}
-              <code className="font-mono text-foreground">runnerbox login</code>
+              <code className="font-mono text-foreground">npm i -g @touchtechclub/simbox</code>{" "}
+              &amp; <code className="font-mono text-foreground">simbox login</code>
             </span>
           </li>
           <li className="flex gap-2.5">
             <span className="font-mono text-xs text-primary">3.</span>
-            <code className="font-mono text-foreground">runnerbox sim</code>
+            <code className="font-mono text-foreground">simbox sim</code>
           </li>
         </ol>
         <Button asChild size="sm" className="self-start">
@@ -343,7 +343,7 @@ function EmptyRunState() {
           No active run. Start one from your terminal:
         </p>
         <Terminal title="your machine" className="w-full max-w-sm text-left">
-          <TermLine prompt>runnerbox sim</TermLine>
+          <TermLine prompt>simbox sim</TermLine>
           <TermLine comment># boots a macOS runner, tunnels sims to you</TermLine>
         </Terminal>
       </CardContent>

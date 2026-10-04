@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
-import type { RepoState, RunState } from "@runnerbox/shared";
+import type { RepoState, RunState } from "@simbox/shared";
 import { user } from "./auth";
 
 /**
@@ -28,10 +28,10 @@ export const repos = sqliteTable(
     installation_id: integer("installation_id").notNull(),
     state: text("state").$type<RepoState>().notNull().default("ok"),
     pr_url: text("pr_url"),
-    runnerbox_token_hash: text("runnerbox_token_hash"),
+    simbox_token_hash: text("simbox_token_hash"),
     created_at: integer("created_at").notNull(),
   },
-  (table) => [index("idx_repos_token_hash").on(table.runnerbox_token_hash)],
+  (table) => [index("idx_repos_token_hash").on(table.simbox_token_hash)],
 );
 
 export const runs = sqliteTable(

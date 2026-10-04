@@ -5,7 +5,7 @@ name: Release
 #
 # jobs:
 #   quality   — typecheck + lint gate
-#   agent     — build runnerbox-agent (macOS), upload tarball to this repo's
+#   agent     — build simbox-agent (macOS), upload tarball to this repo's
 #               GitHub Release, re-render action.yml with its sha256
 #   deploy    — alchemy deploy (D1 migrations + worker + web) to Cloudflare
 #   cli       — npm publish with provenance (trusted publishing, no token)
@@ -56,7 +56,7 @@ jobs:
       - run: bun run typecheck
       - run: bun run check
 
-  # ---- runnerbox-agent binary → GitHub Release (sha256-pinned) ----
+  # ---- simbox-agent binary → GitHub Release (sha256-pinned) ----
   agent:
     needs: [preflight, quality]
     runs-on: macos-latest
@@ -71,9 +71,9 @@ jobs:
       - name: Package tarball + sha256
         id: pkg
         run: |
-          cp packages/agent/dist/runnerbox-agent-darwin-arm64 ./runnerbox-agent
-          tar czf runnerbox-agent-darwin-arm64.tar.gz runnerbox-agent
-          echo "sha256=$(shasum -a 256 runnerbox-agent-darwin-arm64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          cp packages/agent/dist/simbox-agent-darwin-arm64 ./simbox-agent
+          tar czf simbox-agent-darwin-arm64.tar.gz simbox-agent
+          echo "sha256=$(shasum -a 256 simbox-agent-darwin-arm64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - name: Render action.yml with pinned sha
         run: |
           sed "s/{{SHA256}}/${{ steps.pkg.outputs.sha256 }}/" \
@@ -83,13 +83,13 @@ jobs:
         run: |
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --title "runnerbox $TAG" --generate-notes
-          gh release upload "$TAG" runnerbox-agent-darwin-arm64.tar.gz \
+              --title "simbox $TAG" --generate-notes
+          gh release upload "$TAG" simbox-agent-darwin-arm64.tar.gz \
             --repo "$GITHUB_REPOSITORY" --clobber
           # action.yml's `version` input defaults to v1 — the rolling release
           # users actually download from. Keep its tarball in lockstep with
           # the sha256 embedded in action.yml or every run fails the checksum.
-          gh release upload v1 runnerbox-agent-darwin-arm64.tar.gz \
+          gh release upload v1 simbox-agent-darwin-arm64.tar.gz \
             --repo "$GITHUB_REPOSITORY" --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -194,7 +194,7 @@ jobs:
         run: cd apps/cli && npm publish --provenance --access public
       # Fallback when the npmjs.com trusted-publisher config doesn't match
       # (403 "OIDC permission denied"). Requires an NPM_TOKEN repo secret —
-      # a granular access token with publish rights on the runnerbox package.
+      # a granular access token with publish rights on the simbox package.
       - name: Publish (NPM_TOKEN fallback)
         if: steps.oidc.outcome == 'failure'
         env:
@@ -239,8 +239,8 @@ jobs:
           git clone --depth 1 https://x-access-token:${GH_TOKEN}@github.com/TouchTechClub/runner.git runner-repo
           cp runner-action.yml runner-repo/action.yml
           cd runner-repo
-          git config user.name "runnerbox-ci"
-          git config user.email "ci@runnerbox.dpdns.org"
+          git config user.name "simbox-ci"
+          git config user.email "ci@simbox.touchtech.club"
           git add action.yml
           if ! git diff --cached --quiet; then
             git commit -m "release: ${{ needs.preflight.outputs.tag }} (sha256 ${{ github.sha }})"

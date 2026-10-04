@@ -614,7 +614,7 @@
       "autoincrement": false,
       "default": null,
       "generated": null,
-      "name": "runnerbox_token_hash",
+      "name": "simbox_token_hash",
       "entityType": "columns",
       "table": "repos"
     },
@@ -998,7 +998,7 @@
     {
       "columns": [
         {
-          "value": "runnerbox_token_hash",
+          "value": "simbox_token_hash",
           "isExpression": false
         }
       ],

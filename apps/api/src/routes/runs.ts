@@ -1,15 +1,15 @@
 import { Hono } from "hono";
 import { and, desc, eq, isNull, notInArray } from "drizzle-orm";
-import { createDb, schema } from "@runnerbox/db";
-import type { Database } from "@runnerbox/db";
+import { createDb, schema } from "@simbox/db";
+import type { Database } from "@simbox/db";
 import type {
   EnsureRunRequest,
   EnsureRunResponse,
   RunHeartbeatRequest,
   RunRegisterRequest,
   RunState,
-} from "@runnerbox/shared";
-import { HARD_EXIT_MINUTES, MAX_DEVICES_PER_RUN } from "@runnerbox/shared";
+} from "@simbox/shared";
+import { HARD_EXIT_MINUTES, MAX_DEVICES_PER_RUN } from "@simbox/shared";
 import type { AppContext } from "../middleware";
 import type { Env } from "../env";
 import { requireRunnerToken, requireUser } from "../middleware";
@@ -253,7 +253,7 @@ runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
           c,
           409,
           "dispatch_failed",
-          "Could not dispatch the workflow — run `runnerbox repair`.",
+          "Could not dispatch the workflow — run `simbox repair`.",
         );
       }
       throw e;
@@ -375,7 +375,7 @@ runRoutes.post("/v1/runs/:id/stop", requireUser, async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// Runner-authenticated endpoints (Bearer RUNNERBOX_TOKEN)
+// Runner-authenticated endpoints (Bearer SIMBOX_TOKEN)
 // ---------------------------------------------------------------------------
 
 // POST /v1/runs/register — agent announces its tunnel.

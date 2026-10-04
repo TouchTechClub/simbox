@@ -43,7 +43,7 @@ types require opting into `xcode-27` in your repository's workflow.
 
 Android AVD preparation runs in the background. `simbox exec ... --platform
 android` waits for it before sending commands. `android_ready: yes` means the
-SDK/emulator executable and AVD are installed, not that the emulator is booted:
+SDK/emulator executable and AVD are installed **and the emulator has completed boot**:
 
 ```bash
 simbox sim --new --json

@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PINS } from "./pins.js";
 import { endGroup, info, relay, startGroup, warn } from "./log.js";
-import { run, which } from "./proc.js";
+import { run, which, pumpLines } from "./proc.js";
+import type { ChildProc } from "./proc.js";
 
 /** Directory the agent uses for downloaded binaries. */
 export function binDir(): string {
@@ -125,7 +126,10 @@ function firstExisting(candidates: Array<string | null>): string | null {
  * Android emulator prep — runs fully in the background. Every failure is
  * non-fatal: it only leaves `androidReady` false in heartbeats.
  */
-export async function prepareAndroid(setReady: () => void): Promise<void> {
+export async function prepareAndroid(
+  setReady: () => void,
+  onEmulator: (proc: ChildProc) => void,
+): Promise<void> {
   startGroup("Android emulator prep");
   try {
     const sdkRoot = firstExisting([Bun.env.ANDROID_HOME ?? null, Bun.env.ANDROID_SDK_ROOT ?? null]);
@@ -198,7 +202,55 @@ export async function prepareAndroid(setReady: () => void): Promise<void> {
     info(
       `Android acceleration check (exit ${acceleration.code}): ${acceleration.stdout.trim().slice(0, 500)} ${acceleration.stderr.trim().slice(0, 500)}`,
     );
-    info("AVD 'simbox' created — Android ready");
+    info("booting AVD 'simbox' headlessly with software graphics");
+    const emulator = Bun.spawn(
+      [
+        join(sdkRoot, "emulator", "emulator"),
+        "-avd",
+        "simbox",
+        "-port",
+        "5554",
+        "-no-window",
+        "-no-audio",
+        "-no-boot-anim",
+        "-no-snapshot",
+        "-gpu",
+        "swiftshader_indirect",
+        "-feature",
+        "-Vulkan",
+        "-memory",
+        "2048",
+      ],
+      { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+    );
+    onEmulator(emulator);
+    pumpLines(emulator.stdout, "android-emulator");
+    pumpLines(emulator.stderr, "android-emulator");
+    const deadline = Date.now() + 6 * 60_000;
+    const adb = join(sdkRoot, "platform-tools", "adb");
+    let booted = false;
+    while (Date.now() < deadline && emulator.exitCode === null) {
+      const result = await run(
+        [adb, "-s", "emulator-5554", "shell", "getprop", "sys.boot_completed"],
+        { timeoutMs: 10_000 },
+      );
+      if (result.code === 0 && result.stdout.trim() === "1") {
+        booted = true;
+        break;
+      }
+      await Bun.sleep(2000);
+    }
+    if (!booted) {
+      emulator.kill();
+      throw new Error(
+        `Android emulator failed to boot (exit ${emulator.exitCode ?? "boot deadline exceeded"}); see android-emulator logs`,
+      );
+    }
+    // Dismiss first-boot keyguard so remotely launched apps are interactive.
+    await run([adb, "-s", "emulator-5554", "shell", "input", "keyevent", "82"], {
+      timeoutMs: 10_000,
+    });
+    info("AVD 'simbox' boot completed — Android ready (emulator-5554)");
     setReady();
   } catch (err) {
     warn(`Android prep failed (non-fatal): ${String(err).slice(0, 300)}`);

@@ -63,7 +63,7 @@ const state = {
   registered: false,
   shuttingDown: false,
   bootedAt: Date.now(),
-  children: {} as { proxy?: ManagedChild; tunnel?: ManagedChild },
+  children: {} as { proxy?: ManagedChild; tunnel?: ManagedChild; emulator?: ManagedChild },
   gateway: null as ReturnType<typeof startGateway> | null,
   wake: null as (() => void) | null,
 };
@@ -237,7 +237,9 @@ async function register(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function killChildren(): Promise<void> {
-  const kids = [state.children.proxy, state.children.tunnel].filter((c): c is ManagedChild => !!c);
+  const kids = [state.children.proxy, state.children.tunnel, state.children.emulator].filter(
+    (c): c is ManagedChild => !!c,
+  );
   for (const c of kids) {
     if (c.dead) continue;
     try {
@@ -546,9 +548,14 @@ async function main(): Promise<void> {
     warmIOS: Bun.env.SIMBOX_WARM_IOS === "true",
     ios: () => prepareIOS(state.agentDeviceBin),
     android: () =>
-      prepareAndroid(() => {
-        state.androidReady = true;
-      }),
+      prepareAndroid(
+        () => {
+          state.androidReady = true;
+        },
+        (proc) => {
+          state.children.emulator = track("Android emulator", proc);
+        },
+      ),
     warn,
   });
 

@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
-import type { RepoState, RunState } from "@simbox/shared";
+import type { RepoState, RunState, RunnerTarget } from "@simbox/shared";
 import { user } from "./auth";
 
 /**
@@ -13,6 +13,15 @@ export const installations = sqliteTable("installations", {
   account_login: text("account_login"),
   user_id: text("user_id").references(() => user.id),
   created_at: integer("created_at").notNull(),
+});
+
+/** Account defaults survive repository disconnects; null means GitHub default. */
+export const runnerSettings = sqliteTable("runner_settings", {
+  user_id: text("user_id")
+    .primaryKey()
+    .references(() => user.id, { onDelete: "cascade" }),
+  ios_runner: text("ios_runner", { mode: "json" }).$type<RunnerTarget>(),
+  android_runner: text("android_runner", { mode: "json" }).$type<RunnerTarget>(),
 });
 
 export const repos = sqliteTable(
@@ -29,6 +38,8 @@ export const repos = sqliteTable(
     state: text("state").$type<RepoState>().notNull().default("ok"),
     pr_url: text("pr_url"),
     simbox_token_hash: text("simbox_token_hash"),
+    ios_runner: text("ios_runner", { mode: "json" }).$type<RunnerTarget>(),
+    android_runner: text("android_runner", { mode: "json" }).$type<RunnerTarget>(),
     created_at: integer("created_at").notNull(),
   },
   (table) => [index("idx_repos_token_hash").on(table.simbox_token_hash)],
@@ -45,6 +56,7 @@ export const runs = sqliteTable(
     gh_run_id: integer("gh_run_id").unique(),
     state: text("state").$type<RunState>().notNull().default("dispatching"),
     platform: text("platform").$type<"ios" | "android">().notNull().default("ios"),
+    runner: text("runner", { mode: "json" }).$type<RunnerTarget>(),
     tunnel_url: text("tunnel_url"),
     daemon_token: text("daemon_token"),
     active_devices: integer("active_devices").notNull().default(0),

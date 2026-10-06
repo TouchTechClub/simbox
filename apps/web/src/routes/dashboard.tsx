@@ -46,6 +46,8 @@ import {
 import { cn } from "@/lib/utils";
 import { appRoute } from "./app";
 import type { PublicRun } from "@simbox/shared/types";
+import { formatRunner } from "@simbox/shared/runners";
+import { DevicePreviewPanel } from "@/components/device-preview";
 
 const STARTING_STATES = new Set(["dispatching", "queued", "booting", "closing"]);
 
@@ -81,6 +83,7 @@ function Toolbar() {
   const refresh = () =>
     Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.currentRun }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.runnerSettings }),
       queryClient.invalidateQueries({ queryKey: queryKeys.repoStatus }),
       queryClient.invalidateQueries({ queryKey: queryKeys.runs }),
     ]);
@@ -134,6 +137,7 @@ function RepoPanel() {
   const invalidate = () =>
     Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.repoStatus }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.runnerSettings }),
       queryClient.invalidateQueries({ queryKey: queryKeys.runs }),
       queryClient.invalidateQueries({ queryKey: queryKeys.currentRun }),
     ]);
@@ -189,8 +193,12 @@ function RepoPanel() {
           <Notice variant="warning">
             <TriangleAlert />
             <span className="text-xs">
-              Private repo: macOS minutes are billed at a <strong>10× multiplier</strong>. Each run
-              can burn ~10 hours of metered minutes.
+              Private repository: runner usage may consume paid minutes. macOS and third-party
+              providers have different rates; review billing in{" "}
+              <Link to="/runners" className="underline">
+                runner settings
+              </Link>
+              .
             </span>
           </Notice>
         ) : null}
@@ -414,6 +422,9 @@ function LiveRunPanel() {
         </Button>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
+        <p className="break-words font-mono text-xs text-muted-foreground">
+          {run.platform} · {formatRunner(run.runner)}
+        </p>
         <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {[
             { label: "uptime", value: formatDuration(now - run.createdAt) },
@@ -525,6 +536,7 @@ function HistoryPanel() {
               <TableRow>
                 <TableHead>run</TableHead>
                 <TableHead>state</TableHead>
+                <TableHead>runner</TableHead>
                 <TableHead>created</TableHead>
                 <TableHead>ended</TableHead>
                 <TableHead>reason</TableHead>
@@ -539,6 +551,9 @@ function HistoryPanel() {
                   </TableCell>
                   <TableCell>
                     <RunStateBadge state={r.state} />
+                  </TableCell>
+                  <TableCell className="max-w-48 break-words font-mono text-xs">
+                    {r.platform} · {formatRunner(r.runner)}
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {formatTimestamp(r.createdAt)}
@@ -560,6 +575,7 @@ function HistoryPanel() {
 }
 
 function Dashboard() {
+  const current = useCurrentRun();
   return (
     <div className="flex flex-col gap-6">
       <PageHeader />
@@ -573,6 +589,9 @@ function Dashboard() {
           <GettingStartedPanel />
         </div>
       </div>
+      {current.data?.run?.state === "live" ? (
+        <DevicePreviewPanel key={current.data.run.id} runId={current.data.run.id} />
+      ) : null}
       <HistoryPanel />
     </div>
   );

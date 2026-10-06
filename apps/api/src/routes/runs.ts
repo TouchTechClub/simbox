@@ -9,13 +9,20 @@ import type {
   RunRegisterRequest,
   RunState,
 } from "@simbox/shared";
-import { HARD_EXIT_MINUTES, MAX_DEVICES_PER_RUN } from "@simbox/shared";
+import {
+  HARD_EXIT_MINUTES,
+  MAX_DEVICES_PER_RUN,
+  resolveRunner,
+  validateRunner,
+  sameRunner,
+} from "@simbox/shared";
 import type { AppContext } from "../middleware";
 import type { Env } from "../env";
 import { requireRunnerToken, requireUser } from "../middleware";
 import type { RepoRow, RunRow } from "../db";
 import { getLatestActiveRun, getRepoForUser, isTerminal } from "../db";
 import { apiError, newId, nowSeconds, toPublicRun, toRunSummary } from "../util";
+import { getRunnerSettings } from "../runners";
 import {
   bindGhRunId,
   cancelWorkflowRun,
@@ -161,12 +168,22 @@ export async function reconcileRun(
 runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
   const user = c.get("user");
   const db = createDb(c.env);
-  const body = await c.req.json<EnsureRunRequest>().catch(() => ({}) as EnsureRunRequest);
+  const body = await c.req.json<EnsureRunRequest>().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body))
+    return apiError(c, 400, "bad_request", "Expected a run request object.");
   const wantNew = body.new === true;
   if (body.platform !== undefined && body.platform !== "ios" && body.platform !== "android") {
     return apiError(c, 400, "invalid_platform", "platform must be ios or android.");
   }
   const platform = body.platform ?? "ios";
+  if (body.runner !== undefined && !body.platform)
+    return apiError(c, 400, "invalid_runner", "Specify platform when overriding a runner.");
+  let override;
+  try {
+    override = body.runner === undefined ? undefined : validateRunner(body.runner, platform);
+  } catch (err) {
+    return apiError(c, 400, "invalid_runner", (err as Error).message);
+  }
 
   const repo = await getRepoForUser(db, user.id);
   if (!repo) return apiError(c, 404, "no_repo", "Connect a repo first (dashboard onboarding).");
@@ -192,6 +209,14 @@ runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
           409,
           "platform_mismatch",
           "The active run uses a different platform. Use `simbox sim --new --platform android` (or ios) to replace it.",
+        );
+      }
+      if (override && !sameRunner(active.runner, override)) {
+        return apiError(
+          c,
+          409,
+          "runner_mismatch",
+          "The active run uses a different runner. Use `simbox sim --new --platform <platform> --runner <label>` to replace it.",
         );
       }
       if (active.state === "live") {
@@ -241,6 +266,9 @@ runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
       );
   }
 
+  const settings = await getRunnerSettings(db, user.id);
+  const { runner } = resolveRunner(platform, settings.account, settings.repository, override);
+
   // Idempotency: two CLIs racing `ensure` — the loser sees the lock and
   // reports "dispatching" rather than double-dispatching.
   const lockKey = `ensure_lock:${user.id}`;
@@ -253,14 +281,14 @@ runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
   try {
     const now = nowSeconds();
     try {
-      await dispatchWorkflow(instToken, repo.full_name, repo.default_branch, platform);
+      await dispatchWorkflow(instToken, repo.full_name, repo.default_branch, platform, runner);
     } catch (e) {
-      if (e instanceof GithubApiError && e.status === 422 && platform === "android") {
+      if (e instanceof GithubApiError && e.status === 422) {
         return apiError(
           c,
           409,
           "workflow_needs_repair",
-          "Run `simbox repair` to install the platform-aware workflow, then retry `simbox sim --new --platform android`.",
+          "Run `simbox repair` to install the runner-aware workflow (merge its PR if needed), then retry. Simbox will not fall back to another runner.",
         );
       }
       if (e instanceof GithubApiError && (e.status === 404 || e.status === 410)) {
@@ -290,6 +318,7 @@ runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
       gh_run_id: ghRunId,
       state: ghRunId ? "queued" : "dispatching",
       platform,
+      runner,
       created_at: now,
       dispatched_at: now,
       expires_at: now + HARD_EXIT_MINUTES * 60,

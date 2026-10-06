@@ -23,19 +23,20 @@ on:
         type: choice
         options: [ios, android]
         default: ios
+      runner_labels:
+        type: string
+        default: ""
 
 jobs:
   simbox:
-    runs-on: ${{ inputs.platform == 'android' && 'ubuntu-latest' || 'macos-latest' }}
+    runs-on: ${{ fromJSON(inputs.runner_labels || (inputs.platform == 'android' && '["ubuntu-latest"]' || '["macos-latest"]')) }}
     timeout-minutes: 350
     steps:
-      - name: Enable KVM
-        if: ${{ inputs.platform == 'android' }}
-        run: sudo chmod 666 /dev/kvm
       - name: Simbox agent
         uses: TouchTechClub/runner@v1
         with:
           token: ${{ secrets.SIMBOX_TOKEN }}
+          platform: ${{ inputs.platform }}
 ```
 
 Then from your machine:
@@ -54,6 +55,13 @@ HVF for Android. Control it with `simbox exec open com.android.settings --platfo
 android --device simbox`, followed by `simbox exec snapshot -i`.
 
 ## Inputs
+
+`platform` optionally declares `ios` or `android` (empty infers the host).
+The action fails before binary download on the wrong OS/architecture or missing
+tools. Linux requires x64/KVM/Java/Android SDK command-line tools; macOS requires
+ARM64/Xcode. Existing KVM access is preserved; otherwise passwordless sudo is
+required to grant it. See [runner settings](../docs/RUNNERS-AND-SKILLS.md) for
+account defaults, repository overrides, Blacksmith prerequisites and custom labels.
 
 | Input      | Required | Default                             | Description                                      |
 | ---------- | -------- | ----------------------------------- | ------------------------------------------------ |

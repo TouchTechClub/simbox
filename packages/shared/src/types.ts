@@ -1,3 +1,5 @@
+import type { RunnerTarget } from "./runners.js";
+
 /** Run lifecycle states (D1 `runs.state`). */
 export type RunState =
   | "dispatching" // workflow_dispatch sent, awaiting gh_run_id binding
@@ -40,6 +42,7 @@ export interface PublicRun {
   ghRunId: number | null;
   state: RunState;
   platform: "ios" | "android";
+  runner: RunnerTarget | null;
   tunnelUrl: string | null;
   daemonToken: string | null;
   activeDevices: number;
@@ -54,6 +57,8 @@ export interface RunSummary {
   id: string;
   ghRunId: number | null;
   state: RunState;
+  platform: "ios" | "android";
+  runner: RunnerTarget | null;
   activeDevices: number;
   createdAt: number;
   endedAt: number | null;
@@ -65,6 +70,7 @@ export interface RunSummary {
 export interface EnsureRunRequest {
   new?: boolean;
   platform?: "ios" | "android";
+  runner?: RunnerTarget;
 }
 
 export type EnsureRunResponse =
@@ -94,6 +100,7 @@ export interface RunRegisterRequest {
     agent: string;
     agentDevice: string;
     cloudflared: string;
+    deviceHub?: string;
   };
 }
 

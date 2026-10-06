@@ -82,10 +82,11 @@ jobs:
         id: pkg
         run: |
           cp packages/agent/dist/simbox-agent-darwin-arm64 ./simbox-agent
-          tar czf simbox-agent-darwin-arm64.tar.gz simbox-agent
+          cp docs/THIRD-PARTY-NOTICES.md ./THIRD-PARTY-NOTICES.md
+          tar czf simbox-agent-darwin-arm64.tar.gz simbox-agent THIRD-PARTY-NOTICES.md
           echo "sha256=$(shasum -a 256 simbox-agent-darwin-arm64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           cp packages/agent/dist/simbox-agent-linux-amd64 ./simbox-agent
-          tar czf simbox-agent-linux-amd64.tar.gz simbox-agent
+          tar czf simbox-agent-linux-amd64.tar.gz simbox-agent THIRD-PARTY-NOTICES.md
           echo "sha256_linux=$(shasum -a 256 simbox-agent-linux-amd64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - name: Render action.yml with pinned sha
         run: |
@@ -127,7 +128,9 @@ jobs:
 
   # ---- deploy API + web + D1/KV via alchemy ----
   deploy:
-    needs: [preflight, quality]
+    # New API contracts must not go live before compatible agents/actions and
+    # CLI are published. Alchemy applies D1 migrations before the bound Worker.
+    needs: [preflight, quality, runner, cli]
     runs-on: ubuntu-latest
     environment: production
     env:

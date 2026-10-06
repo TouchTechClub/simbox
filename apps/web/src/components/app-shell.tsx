@@ -8,6 +8,7 @@ import {
   Moon,
   Sun,
   TerminalSquare,
+  Server,
 } from "lucide-react";
 import type { ReactNode } from "react";
 
@@ -133,6 +134,14 @@ function Nav() {
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
+            <SidebarMenuButton asChild isActive={pathname === "/runners"}>
+              <Link to="/runners">
+                <Server />
+                Runners
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
             <SidebarMenuButton disabled aria-disabled="true" title="Coming soon">
               <Activity />
               <span className="text-muted-foreground">Runs</span>
@@ -205,6 +214,12 @@ export function AppShell({ crumb, children }: { crumb: string; children: ReactNo
             <span className="text-foreground">{crumb}</span>
           </nav>
           <div className="ml-auto flex items-center gap-1">
+            <Link
+              to="/runners"
+              className="px-2 text-xs text-muted-foreground hover:text-foreground lg:hidden"
+            >
+              Runners
+            </Link>
             <div
               aria-hidden="true"
               className="hidden items-center gap-1 rounded-md border border-border bg-muted/50 px-2 py-1 sm:flex"

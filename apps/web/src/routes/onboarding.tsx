@@ -86,6 +86,7 @@ function InstallAndPick({ onPicked }: { onPicked: () => void }) {
         installation_id: repo.installationId,
       });
       await queryClient.invalidateQueries({ queryKey: queryKeys.repoStatus });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.runnerSettings });
       onPicked();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Failed to connect repo");
@@ -179,8 +180,9 @@ function InstallAndPick({ onPicked }: { onPicked: () => void }) {
               <Notice variant="warning">
                 <TriangleAlert />
                 <span>
-                  Private repos bill GitHub Actions minutes at a{" "}
-                  <strong>10× multiplier on macOS runners</strong>. Public repos are free.
+                  Private repositories may consume paid minutes, with different rates for macOS and
+                  third-party runners. Public repositories may use GitHub&apos;s standard-runner
+                  allowance; Blacksmith bills separately.
                 </span>
               </Notice>
             ) : null}

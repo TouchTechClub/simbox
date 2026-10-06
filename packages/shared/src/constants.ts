@@ -35,21 +35,21 @@ on:
         options: [ios, android]
         default: ios
         description: Device platform (Android uses Linux/KVM)
+      runner_labels:
+        type: string
+        default: ""
+        description: JSON array of runner labels (empty uses platform default)
 
 jobs:
   simbox:
-    runs-on: \${{ inputs.platform == 'android' && 'ubuntu-latest' || 'macos-latest' }}
+    runs-on: \${{ fromJSON(inputs.runner_labels || (inputs.platform == 'android' && '["ubuntu-latest"]' || '["macos-latest"]')) }}
     timeout-minutes: 350
     steps:
-      - name: Enable Android KVM access
-        if: \${{ inputs.platform == 'android' }}
-        run: |
-          test -e /dev/kvm || { echo "KVM is required for Android" >&2; exit 1; }
-          sudo chmod 666 /dev/kvm
       - name: Simbox agent
         uses: TouchTechClub/runner@v1
         with:
           token: \${{ secrets.SIMBOX_TOKEN }}
+          platform: \${{ inputs.platform }}
 `;
 
 /** Commit message used when installing the workflow file. */

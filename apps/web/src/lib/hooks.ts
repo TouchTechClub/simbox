@@ -8,6 +8,7 @@ export const queryKeys = {
   repoStatus: ["repoStatus"] as const,
   currentRun: ["currentRun"] as const,
   runs: ["runs"] as const,
+  runnerSettings: ["runnerSettings"] as const,
 };
 
 export function useMe() {

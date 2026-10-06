@@ -8,7 +8,7 @@ Free on-demand iOS simulators & Android emulators running on your own GitHub Act
 
 1. Sign in with GitHub on the dashboard, install the GitHub App, pick a repo.
 2. We commit `.github/workflows/simbox.yml` to the repo and write a `SIMBOX_TOKEN` secret.
-3. `simbox sim` asks our API for a run → we `workflow_dispatch` into your repo → a `macos-latest` runner boots `agent-device proxy` + a Cloudflare tunnel → the tunnel URL + daemon token come back to your CLI.
+3. `simbox sim` asks our API for a run → we `workflow_dispatch` into your repo → your selected macOS/iOS or Linux/Android runner boots `agent-device proxy` + a Cloudflare tunnel → the tunnel URL + daemon token come back to your CLI.
 4. Drive sims/emulators with `simbox exec <agent-device command>` until the run ends (idle timeout, `simbox stop`, or ~6h).
 
 ## Use
@@ -61,6 +61,41 @@ simbox exec snapshot -i
 Direct `agent-device` clients remain supported via the exports printed by
 `simbox sim`, but must refresh those exports after a tunnel change. Simbox does
 not edit agent-device's global configuration or existing proxy profiles.
+
+## Runner selection and agent setup
+
+Configure independent iOS/macOS and Android/Linux runners on the dashboard's
+**Runners** page. New runs resolve **CLI override → repository override → account
+default → GitHub default**. GitHub and Blacksmith presets plus custom labels are
+supported; Blacksmith requires its App and separate billing. Settings affect only
+future runs and survive `simbox repair`.
+
+```bash
+simbox runners set android blacksmith-4vcpu-ubuntu-2404 --scope account
+simbox runners set ios macos-latest --scope repo
+simbox runners show
+simbox doctor
+simbox sim --new --platform android --runner ubuntu-latest
+simbox skills install  # asks current project vs global, then agent selection
+```
+
+Upgrade older workflows with `simbox repair` once (merge its PR if needed) before
+using runner-aware dispatch. Custom runners must be Linux x64/KVM or macOS
+ARM64/Xcode with the documented tools. Simbox never silently falls back to
+another runner. For automation: `simbox skills install --project --agent codex
+--yes`. Direct installation: `bunx skills add TouchTechClub/simbox --skill simbox`.
+
+Details: [runner configuration and skills](docs/RUNNERS-AND-SKILLS.md).
+
+## Live device panel
+
+On a live run, open **Dashboard → Devices → Open device panel** to see active
+devices with live H.264 video. Enable control explicitly for tap/drag, keyboard,
+navigation and text input; screenshots and fullscreen are available too. This
+uses the same `expo-device-hub` backend as T3 Code, not screenshot polling.
+Preview routes are authenticated and viewing doesn't reset the runner idle timer.
+Android needs H.264 WebCodecs on HTTPS/localhost; iOS can fall back to live MJPEG.
+See [device previews](docs/DEVICE-PREVIEWS.md) for details and rollout requirements.
 
 ## Monorepo
 

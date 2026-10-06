@@ -5,7 +5,9 @@
   "exports": {
     ".": "./src/index.ts",
     "./types": "./src/types.ts",
-    "./constants": "./src/constants.ts"
+    "./constants": "./src/constants.ts",
+    "./runners": "./src/runners.ts",
+    "./preview": "./src/preview.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

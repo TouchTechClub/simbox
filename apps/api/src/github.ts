@@ -3,6 +3,9 @@ import {
   WORKFLOW_COMMIT_MESSAGE,
   WORKFLOW_PATH,
   WORKFLOW_YAML,
+  DEFAULT_RUNNERS,
+  validateRunner,
+  type RunnerTarget,
 } from "@simbox/shared";
 import { sealedBox } from "./sealedbox";
 import type { Env } from "./env";
@@ -319,12 +322,17 @@ export async function dispatchWorkflow(
   fullName: string,
   ref: string,
   platform: "ios" | "android" = "ios",
+  runner: RunnerTarget = DEFAULT_RUNNERS[platform],
 ): Promise<void> {
   // The workflow file is addressed by path, per the REST API.
   await gh<unknown>(token, `/repos/${fullName}/actions/workflows/simbox.yml/dispatches`, {
     method: "POST",
-    // Preserve compatibility with previously installed iOS workflows.
-    body: platform === "android" ? { ref, inputs: { platform } } : { ref },
+    // Always bind the exact selected target. Old workflows must be repaired;
+    // omitting inputs could silently run on a different (possibly paid) image.
+    body: {
+      ref,
+      inputs: { platform, runner_labels: JSON.stringify(validateRunner(runner, platform).labels) },
+    },
   });
 }
 

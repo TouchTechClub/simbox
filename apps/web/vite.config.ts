@@ -20,7 +20,7 @@ export default defineConfig({
     proxy: {
       // Same-origin in dev: vite proxies auth + API to `wrangler dev`.
       "/api/auth": { target: DEV_API_TARGET, changeOrigin: true },
-      "/v1": { target: DEV_API_TARGET, changeOrigin: true },
+      "/v1": { target: DEV_API_TARGET, changeOrigin: true, ws: true },
     },
   },
 });

@@ -33,14 +33,15 @@ test("default Android preparation never invokes iOS inventory", async () => {
   expect(android).toBe(true);
 });
 
-test("Android uses the host ABI and platform-aware workflow enables Linux/KVM", () => {
+test("Android uses the host ABI and platform-aware workflow selects runner label arrays", () => {
   expect(androidSystemImage("x64")).toBe("system-images;android-34;google_apis;x86_64");
   expect(androidSystemImage("arm64")).toBe("system-images;android-34;google_apis;arm64-v8a");
   expect(WORKFLOW_YAML).toContain("options: [ios, android]");
   expect(WORKFLOW_YAML).toContain(
-    "inputs.platform == 'android' && 'ubuntu-latest' || 'macos-latest'",
+    "inputs.platform == 'android' && '[\"ubuntu-latest\"]' || '[\"macos-latest\"]'",
   );
-  expect(WORKFLOW_YAML).toContain("sudo chmod 666 /dev/kvm");
+  expect(WORKFLOW_YAML).toContain("fromJSON(inputs.runner_labels");
+  expect(WORKFLOW_YAML).toContain("platform: ${{ inputs.platform }}");
 });
 
 test("AVD creation and discovery share explicit directories across SDK generations", () => {
@@ -56,7 +57,7 @@ test("AVD creation and discovery share explicit directories across SDK generatio
   ).toBe("/custom/avds");
 });
 
-test("workflow dispatch carries Android platform while preserving legacy iOS dispatch", async () => {
+test("workflow dispatch always carries platform and exact runner labels", async () => {
   const original = globalThis.fetch;
   const bodies: unknown[] = [];
   globalThis.fetch = (async (_url: unknown, init: RequestInit) => {
@@ -66,7 +67,17 @@ test("workflow dispatch carries Android platform while preserving legacy iOS dis
   try {
     await dispatchWorkflow("test", "owner/repo", "main", "android");
     await dispatchWorkflow("test", "owner/repo", "main");
-    expect(bodies).toEqual([{ ref: "main", inputs: { platform: "android" } }, { ref: "main" }]);
+    await dispatchWorkflow("test", "owner/repo", "main", "android", {
+      labels: ["self-hosted", "linux", "x64", "kvm"],
+    });
+    expect(bodies).toEqual([
+      { ref: "main", inputs: { platform: "android", runner_labels: '["ubuntu-latest"]' } },
+      { ref: "main", inputs: { platform: "ios", runner_labels: '["macos-latest"]' } },
+      {
+        ref: "main",
+        inputs: { platform: "android", runner_labels: '["self-hosted","linux","x64","kvm"]' },
+      },
+    ]);
   } finally {
     globalThis.fetch = original;
   }

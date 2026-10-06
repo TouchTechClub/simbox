@@ -6,6 +6,7 @@ import { rootRoute } from "./root";
 const CRUMBS: Record<string, string> = {
   "/dashboard": "overview",
   "/onboarding": "setup",
+  "/runners": "runners",
 };
 
 /** Pathless layout route: wraps dashboard + onboarding in the app shell. */

@@ -34,8 +34,9 @@ mkdir -p "$OUT_DIR"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 cp "$AGENT_DIR/dist/simbox-agent-darwin-arm64" "$STAGE/$BIN_NAME"
+cp "$REPO_ROOT/docs/THIRD-PARTY-NOTICES.md" "$STAGE/THIRD-PARTY-NOTICES.md"
 chmod +x "$STAGE/$BIN_NAME"
-tar -czf "$TARBALL" -C "$STAGE" "$BIN_NAME"
+tar -czf "$TARBALL" -C "$STAGE" "$BIN_NAME" THIRD-PARTY-NOTICES.md
 
 echo "==> Computing sha256"
 if command -v shasum >/dev/null 2>&1; then
@@ -48,7 +49,7 @@ echo "    sha256: $SHA"
 LINUX_TARBALL="$OUT_DIR/simbox-agent-linux-amd64.tar.gz"
 cp "$AGENT_DIR/dist/simbox-agent-linux-amd64" "$STAGE/$BIN_NAME"
 chmod +x "$STAGE/$BIN_NAME"
-tar -czf "$LINUX_TARBALL" -C "$STAGE" "$BIN_NAME"
+tar -czf "$LINUX_TARBALL" -C "$STAGE" "$BIN_NAME" THIRD-PARTY-NOTICES.md
 if command -v shasum >/dev/null 2>&1; then
   LINUX_SHA="$(shasum -a 256 "$LINUX_TARBALL" | awk '{print $1}')"
 else

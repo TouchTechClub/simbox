@@ -5,6 +5,10 @@ import type {
   RepoStatusResponse,
   RunSummary,
   User,
+  RunnerSettings,
+  RunnerPreferences,
+  RunnerTarget,
+  RunnerDiagnostics,
 } from "@simbox/shared";
 import { apiBaseUrl, loadToken } from "./config.js";
 
@@ -159,8 +163,16 @@ export const repairRepo = () =>
     method: "POST",
   });
 
-export const ensureRun = (fresh: boolean, platform?: "ios" | "android") =>
-  api<EnsureRunResponse>("/v1/runs/ensure", { method: "POST", body: { new: fresh, platform } });
+export const ensureRun = (fresh: boolean, platform?: "ios" | "android", runner?: RunnerTarget) =>
+  api<EnsureRunResponse>("/v1/runs/ensure", {
+    method: "POST",
+    body: { new: fresh, platform, runner },
+  });
+
+export const runnerSettings = () => api<RunnerSettings>("/v1/runners");
+export const runnerDiagnostics = () => api<RunnerDiagnostics>("/v1/runners/doctor");
+export const updateRunners = (scope: "account" | "repo", patch: Partial<RunnerPreferences>) =>
+  api<RunnerSettings>(`/v1/runners/${scope}`, { method: "POST", body: patch });
 
 /** null when the user has no active/recent run. API wraps: {run: PublicRun | null}. */
 export async function currentRun(): Promise<PublicRun | null> {

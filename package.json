@@ -19,6 +19,7 @@
   "type": "module",
   "scripts": {
     "test": "bun test tests",
+    "test:preview-worker": "node scripts/verify-preview-worker.cjs",
     "typecheck": "for d in packages/shared packages/db packages/agent apps/api apps/cli apps/web; do echo \"── $d\"; (bun run --cwd $d typecheck) || exit 1; done",
     "check": "oxlint && oxfmt --check",
     "check:fix": "oxlint --fix && oxfmt --write",
@@ -30,6 +31,7 @@
     "destroy": "bun run --cwd packages/infra destroy"
   },
   "devDependencies": {
+    "miniflare": "4.20260730.0",
     "oxfmt": "^0.66.0",
     "oxlint": "^1.81.0",
     "typescript": "catalog:"

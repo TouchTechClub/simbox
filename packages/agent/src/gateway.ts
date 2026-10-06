@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { createPreviewGateway, type PreviewSocket } from "./preview-gateway.js";
 
 /** A loopback-only relay; agent-device remains responsible for RPC/auth. */
 export function startGateway(options: {
@@ -7,20 +8,44 @@ export function startGateway(options: {
   token: string;
   requestTimeoutMs?: number;
   heartbeatMs?: number;
+  previewPort?: () => Promise<number>;
+  previewSessionMs?: number;
+  restartPreviewHub?: () => Promise<void>;
 }) {
   let inFlight = 0;
   let lastActivityAt = Date.now();
   const expected = Buffer.from(`Bearer ${options.token}`);
-  const server = Bun.serve({
+  const preview = createPreviewGateway({
+    port:
+      options.previewPort ??
+      (async () => {
+        throw new Error("Preview unavailable");
+      }),
+    activity: () => {
+      lastActivityAt = Date.now();
+    },
+    sessionMs: options.previewSessionMs,
+    restartHub: options.restartPreviewHub,
+  });
+  const server = Bun.serve<PreviewSocket>({
     hostname: "127.0.0.1",
     port: options.port,
     idleTimeout: 255,
     // Same RPC body ceiling as agent-device; upload streams are supported too.
     maxRequestBodySize: 512 * 1024 * 1024,
-    async fetch(req) {
+    websocket: preview.websocket,
+    async fetch(req, server) {
       const url = new URL(req.url);
       const auth = Buffer.from(req.headers.get("authorization") ?? "");
       const authenticated = auth.length === expected.length && timingSafeEqual(auth, expected);
+      if (url.pathname.startsWith("/simbox-preview")) {
+        if (!authenticated)
+          return new Response("Unauthorized", {
+            status: 401,
+            headers: { "cache-control": "no-store" },
+          });
+        return preview.fetch(req, server);
+      }
       // Probes must not keep an unused runner alive. Only authenticated device
       // work counts, and each request has a ceiling so hung work is bounded.
       const activity = authenticated && url.pathname !== "/agent-device/health";
@@ -141,6 +166,7 @@ export function startGateway(options: {
     server,
     activity: () => ({ inFlight, lastActivityAt }),
     ready: Promise.resolve(),
+    stopPreview: preview.stop,
   };
 }
 

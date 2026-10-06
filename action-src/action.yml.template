@@ -7,6 +7,10 @@ branding:
   icon: box
   color: purple
 inputs:
+  platform:
+    description: Expected device platform (ios or android). Empty infers from the host.
+    required: false
+    default: ""
   warm_ios:
     description: Optional best-effort iOS prewarming. Leave false for Android-only runs.
     required: false
@@ -28,11 +32,37 @@ runs:
     - name: Run simbox-agent
       shell: bash
       env:
+        SIMBOX_PLATFORM: ${{ inputs.platform }}
         SIMBOX_WARM_IOS: ${{ inputs.warm_ios }}
         SIMBOX_TOKEN: ${{ inputs.token }}
         SIMBOX_API_URL: ${{ inputs.api_url }}
       run: |
         set -euo pipefail
+        # Fail before provisioning on incompatible custom runners. These inputs
+        # are data in env, never interpolated into shell source.
+        HOST="$(uname -s)-$(uname -m)"
+        echo "Simbox runner preflight: $HOST; platform=${SIMBOX_PLATFORM:-auto}"
+        case "$SIMBOX_PLATFORM:$HOST" in
+          ios:Darwin-arm64|android:Linux-x86_64|:Darwin-arm64|:Linux-x86_64) ;;
+          *) echo "Unsupported runner: iOS needs macOS ARM64/Xcode; Android needs Linux x64/KVM." >&2; exit 1 ;;
+        esac
+        for tool in node npm curl tar shasum; do
+          command -v "$tool" >/dev/null || { echo "Missing $tool on custom runner" >&2; exit 1; }
+        done
+        if [[ "$HOST" == Darwin-* ]]; then
+          xcrun --find simctl >/dev/null || { echo "Xcode with Simulator support is required" >&2; exit 1; }
+        else
+          command -v java >/dev/null || { echo "Java is required for Android SDK tools" >&2; exit 1; }
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          [[ -n "$SDK" && -d "$SDK" ]] || { echo "Set ANDROID_HOME or ANDROID_SDK_ROOT to an installed Android SDK" >&2; exit 1; }
+          if [[ ! -x "$SDK/cmdline-tools/latest/bin/sdkmanager" && ! -x "$SDK/tools/bin/sdkmanager" ]] && ! command -v sdkmanager >/dev/null; then
+            echo "Android SDK command-line tools (sdkmanager) are required" >&2; exit 1
+          fi
+          test -e /dev/kvm || { echo "KVM is required for Android; choose a Linux x64 VM with nested virtualization" >&2; exit 1; }
+          if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
+            sudo -n chmod 666 /dev/kvm || { echo "Grant the runner user read/write access to /dev/kvm" >&2; exit 1; }
+          fi
+        fi
         case "$(uname -s)-$(uname -m)" in
           Darwin-arm64) TARBALL=simbox-agent-darwin-arm64.tar.gz; SHA={{SHA256}} ;;
           Linux-x86_64) TARBALL=simbox-agent-linux-amd64.tar.gz; SHA={{SHA256_LINUX}} ;;

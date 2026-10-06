@@ -1,6 +1,7 @@
 import { rmSync } from "node:fs";
 import pc from "picocolors";
 import type { PublicRun, RepoStatusResponse } from "@simbox/shared";
+import { parseRunnerInput, formatRunner } from "@simbox/shared";
 import {
   CliError,
   currentRun,
@@ -129,7 +130,9 @@ function printRepoConnected(repo: {
   }
   if (repo.private) {
     console.log(
-      pc.yellow("Note: private repos are billed at the 10× macOS minute multiplier by GitHub."),
+      pc.yellow(
+        "Note: private repositories may consume paid runner minutes. Review GitHub or your selected provider's billing.",
+      ),
     );
   }
   console.log(`Run ${pc.cyan("simbox sim")} to boot a simulator.`);
@@ -144,11 +147,16 @@ export async function cmdSim(opts: {
   new?: boolean;
   json?: boolean;
   platform?: "ios" | "android";
+  runner?: string;
 }): Promise<void> {
   const json = opts.json === true;
   const out = json ? process.stderr : process.stdout;
 
-  const first = await ensureRun(opts.new === true, opts.platform);
+  if (opts.runner !== undefined && !opts.platform)
+    throw new CliError("Use --platform ios or android with --runner.");
+  const runner =
+    opts.runner === undefined ? undefined : parseRunnerInput(opts.runner, opts.platform!);
+  const first = await ensureRun(opts.new === true, opts.platform, runner);
 
   let info: ConnectInfo;
   if (first.state === "live") {
@@ -240,6 +248,7 @@ export async function cmdPs(): Promise<void> {
   console.log(`${pc.bold("run")} ${run.id}`);
   console.log(`  state:          ${stateColor(run.state)}`);
   console.log(`  platform:       ${run.platform}`);
+  console.log(`  runner:         ${formatRunner(run.runner)}`);
   console.log(`  gh_run_id:      ${run.ghRunId ?? pc.dim("pending")}`);
   console.log(`  active_devices: ${run.activeDevices}`);
   console.log(`  android_ready:  ${run.androidReady ? "yes" : "no"}`);

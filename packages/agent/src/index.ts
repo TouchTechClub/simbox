@@ -29,6 +29,7 @@ import { ApiClient, HttpError } from "./api.js";
 import { countActiveDevices } from "./devices.js";
 import { run } from "./proc.js";
 import { startGateway } from "./gateway.js";
+import { createPreviewHub } from "./preview-hub.js";
 import { healthyProxy, waitForProxy } from "./health.js";
 import { prepareIOS } from "./ios.js";
 import { preparePlatforms } from "./platforms.js";
@@ -72,6 +73,7 @@ const state = {
   gateway: null as ReturnType<typeof startGateway> | null,
   wake: null as (() => void) | null,
 };
+const previewHub = createPreviewHub();
 
 function notifyWake(): void {
   const w = state.wake;
@@ -214,6 +216,7 @@ async function register(): Promise<void> {
       agent: pkg.version,
       agentDevice: PINS.agentDevice,
       cloudflared: PINS.cloudflared,
+      deviceHub: PINS.deviceHub,
     },
   };
   let lastErr: unknown = null;
@@ -280,7 +283,11 @@ async function shutdown(reason: string, code: number): Promise<never> {
     }
   }
   await killChildren();
-  await state.gateway?.server.stop(true);
+  state.gateway?.stopPreview();
+  await previewHub.stop();
+  // Bun can retain an upgraded socket in its stop promise after the peer has
+  // closed. Preview transports are already released; never wedge hard exit.
+  await Promise.race([state.gateway?.server.stop(true), Bun.sleep(1000)]);
   info(`goodbye (exit ${code})`);
   process.exit(code);
 }
@@ -543,6 +550,8 @@ async function main(): Promise<void> {
     port: PROXY_PORT,
     upstreamPort: UPSTREAM_PORT,
     token: state.daemonToken,
+    previewPort: previewHub.port,
+    restartPreviewHub: previewHub.restart,
   });
   await state.gateway.ready;
   await waitForProxy(`http://127.0.0.1:${PROXY_PORT}/agent-device/health`);

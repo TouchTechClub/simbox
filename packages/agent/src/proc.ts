@@ -19,10 +19,13 @@ export interface RunOptions {
   input?: string;
   /** Kill after this many ms. */
   timeoutMs?: number;
+  /** Cancel optional setup work during runner shutdown. */
+  signal?: AbortSignal;
 }
 
 /** Run a command to completion, capturing output. Never throws on non-zero exit. */
 export async function run(cmd: string[], opts: RunOptions = {}): Promise<RunResult> {
+  opts.signal?.throwIfAborted();
   const proc = Bun.spawn(cmd, {
     stdin: "pipe",
     stdout: "pipe",
@@ -35,6 +38,14 @@ export async function run(cmd: string[], opts: RunOptions = {}): Promise<RunResu
     void stdin.end();
   }
   let timedOut = false;
+  const cancel = () => {
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      /* already dead */
+    }
+  };
+  opts.signal?.addEventListener("abort", cancel, { once: true });
   const killer =
     opts.timeoutMs !== undefined
       ? setTimeout(() => {
@@ -52,9 +63,10 @@ export async function run(cmd: string[], opts: RunOptions = {}): Promise<RunResu
       new Response(proc.stderr).text(),
       proc.exited,
     ]);
-    return { code: timedOut ? -1 : code, stdout, stderr };
+    return { code: timedOut || opts.signal?.aborted ? -1 : code, stdout, stderr };
   } finally {
     if (killer) clearTimeout(killer);
+    opts.signal?.removeEventListener("abort", cancel);
   }
 }
 

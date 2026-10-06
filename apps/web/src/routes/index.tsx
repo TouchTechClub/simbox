@@ -24,8 +24,9 @@ function AuthPanel() {
           Simulators &amp; emulators on your GitHub Actions minutes.
         </h1>
         <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-          A macOS runner in your own repo boots iOS sims and Android emulators, tunnels them to your
-          machine, and tears itself down when you&apos;re done. Public repos cost nothing.
+          A runner in your own repo boots iOS simulators on macOS or Android emulators on Linux,
+          tunnels them to your machine, and tears itself down when you&apos;re done. Runner costs
+          depend on your GitHub allowance or selected provider.
         </p>
 
         <Terminal className="mt-8 shadow-xl" title="simbox — zsh">
@@ -42,7 +43,7 @@ function AuthPanel() {
       </div>
 
       <p className="relative font-mono text-xs text-muted-foreground">
-        free on public repos · ~6h per run · your minutes, your runner
+        GitHub or custom runners · ~6h per run · your repo, your runner
       </p>
     </div>
   );

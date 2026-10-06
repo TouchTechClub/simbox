@@ -1,5 +1,7 @@
 import { PROD_API_URL } from "@simbox/shared/constants";
 import type { PublicRun, Repo, RepoStatusResponse, RunSummary, User } from "@simbox/shared/types";
+import type { RunnerSettings, RunnerPreferences, RunnerTarget } from "@simbox/shared/runners";
+import type { PreviewInventory, PreviewAccess } from "@simbox/shared/preview";
 
 /**
  * API base URL. Same-origin is NOT assumed in prod: the API lives on
@@ -162,6 +164,7 @@ function normalizeRun(raw: unknown): PublicRun | null {
     ghRunId: (r.ghRunId ?? r.gh_run_id ?? null) as number | null,
     state: str(r.state) as PublicRun["state"],
     platform: r.platform === "android" ? "android" : "ios",
+    runner: (r.runner ?? null) as RunnerTarget | null,
     tunnelUrl: (r.tunnelUrl ?? r.tunnel_url ?? null) as string | null,
     daemonToken: (r.daemonToken ?? r.daemon_token ?? null) as string | null,
     activeDevices: num(r.activeDevices ?? r.active_devices),
@@ -178,6 +181,8 @@ function normalizeRunSummary(raw: unknown): RunSummary {
     id: str(r.id),
     ghRunId: (r.ghRunId ?? r.gh_run_id ?? null) as number | null,
     state: str(r.state) as RunSummary["state"],
+    platform: r.platform === "android" ? "android" : "ios",
+    runner: (r.runner ?? null) as RunnerTarget | null,
     activeDevices: num(r.activeDevices ?? r.active_devices),
     createdAt: num(r.createdAt ?? r.created_at),
     endedAt: (r.endedAt ?? r.ended_at ?? null) as number | null,
@@ -188,6 +193,14 @@ function normalizeRunSummary(raw: unknown): RunSummary {
 // ---- API surface used by the app ----
 
 export const api = {
+  previewDevices: (runId: string, signal?: AbortSignal) =>
+    request<PreviewInventory>(`/v1/runs/${encodeURIComponent(runId)}/preview/devices`, { signal }),
+  previewAccess: (runId: string, device: string, control: boolean, signal?: AbortSignal) =>
+    request<PreviewAccess>(`/v1/runs/${encodeURIComponent(runId)}/preview/access`, {
+      method: "POST",
+      body: JSON.stringify({ device, control }),
+      signal,
+    }),
   me: async (): Promise<User> => {
     const raw = await get<unknown>("/v1/me");
     // API wraps: {user, repo}
@@ -217,6 +230,9 @@ export const api = {
 
   repairRepo: () => post<{ ok: boolean }>("/v1/repo/repair"),
   disconnectRepo: () => post<{ ok: boolean }>("/v1/repo/disconnect"),
+  runnerSettings: () => get<RunnerSettings>("/v1/runners"),
+  updateRunners: (scope: "account" | "repo", patch: Partial<RunnerPreferences>) =>
+    post<RunnerSettings>(`/v1/runners/${scope}`, patch),
 
   currentRun: async (): Promise<CurrentRunResponse> => {
     const raw = await get<unknown>("/v1/runs/current");

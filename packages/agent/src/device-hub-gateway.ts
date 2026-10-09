@@ -69,7 +69,16 @@ export function createDeviceHubGateway(options: {
       const device = url.searchParams.get("device") ?? url.searchParams.get("udid");
       if (device !== null && !validPreviewDevice(device))
         return new Response("Invalid device", { status: 400 });
-      const port = await options.port().catch(() => null);
+      // Installing the lazy hub can outlast S5's discovery request. Let it keep
+      // starting, but return a retryable response while it warms.
+      let readinessTimer: ReturnType<typeof setTimeout> | undefined;
+      const port = await Promise.race([
+        options.port().catch(() => null),
+        new Promise<null>((resolve) => {
+          readinessTimer = setTimeout(() => resolve(null), 1000);
+        }),
+      ]);
+      clearTimeout(readinessTimer);
       if (!port) return new Response("Device hub starting; retry shortly", { status: 503 });
       const origin = `http://127.0.0.1:${port}`;
       if (!upgrade) {

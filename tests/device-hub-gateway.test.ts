@@ -115,3 +115,32 @@ test("native device gateway authenticates discovery, boot, screenshot and video;
     void hub.stop(true);
   }
 }, 10_000);
+
+test("native discovery reports a warming hub promptly and connects after lazy installation finishes", async () => {
+  const ready = Promise.withResolvers<number>();
+  const hub = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch() {
+      return Response.json({ simulators: [], emulators: [] });
+    },
+  });
+  const gateway = startGateway({
+    port: 0,
+    upstreamPort: 1,
+    token: "secret",
+    previewPort: () => ready.promise,
+  });
+  const url = `http://127.0.0.1:${gateway.server.port}/simbox-device-hub/api/devices`;
+  const headers = { authorization: "Bearer secret" };
+  try {
+    expect((await fetch(url, { headers, signal: AbortSignal.timeout(3000) })).status).toBe(503);
+    ready.resolve(hub.port!);
+    expect((await fetch(url, { headers })).status).toBe(200);
+  } finally {
+    ready.resolve(hub.port!);
+    gateway.stopPreview();
+    void gateway.server.stop(true);
+    void hub.stop(true);
+  }
+}, 5000);

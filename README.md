@@ -97,6 +97,18 @@ Preview routes are authenticated and viewing doesn't reset the runner idle timer
 Android needs H.264 WebCodecs on HTTPS/localhost; iOS can fall back to live MJPEG.
 See [device previews](docs/DEVICE-PREVIEWS.md) for details and rollout requirements.
 
+## S5 Code integration
+
+Enable device support and agent device access in S5 Code, and log in to Simbox
+on the same machine and user account as its environment server. An agent's
+`simbox sim` command automatically attaches the runner's device to its thread;
+successful `simbox exec` commands attach a selected or running device too.
+Keep command output visible to the agent so S5 can detect the registration.
+The panel supports live video and input. Sessions disappear when the run ends
+or the agent runs `simbox stop`.
+
+This requires the updated Simbox CLI, runner binary, and S5 Code server.
+
 ## Monorepo
 
 | Path              | What                                                                  |

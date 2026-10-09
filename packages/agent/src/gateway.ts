@@ -1,5 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createPreviewGateway, type PreviewSocket } from "./preview-gateway.js";
+import { createDeviceHubGateway, type DeviceHubSocket } from "./device-hub-gateway.js";
+import type { Server, ServerWebSocket } from "bun";
 
 /** A loopback-only relay; agent-device remains responsible for RPC/auth. */
 export function startGateway(options: {
@@ -9,6 +11,7 @@ export function startGateway(options: {
   requestTimeoutMs?: number;
   heartbeatMs?: number;
   previewPort?: () => Promise<number>;
+  previewPlatform?: "ios" | "android";
   previewSessionMs?: number;
   restartPreviewHub?: () => Promise<void>;
 }) {
@@ -16,6 +19,7 @@ export function startGateway(options: {
   let lastActivityAt = Date.now();
   const expected = Buffer.from(`Bearer ${options.token}`);
   const preview = createPreviewGateway({
+    platform: options.previewPlatform,
     port:
       options.previewPort ??
       (async () => {
@@ -27,24 +31,63 @@ export function startGateway(options: {
     sessionMs: options.previewSessionMs,
     restartHub: options.restartPreviewHub,
   });
-  const server = Bun.serve<PreviewSocket>({
+  const nativeHub = createDeviceHubGateway({
+    port:
+      options.previewPort ??
+      (async () => {
+        throw new Error("Preview unavailable");
+      }),
+    activity: () => {
+      lastActivityAt = Date.now();
+    },
+    video: (req) => preview.fetch(req, server as Server<PreviewSocket>),
+  });
+  const server = Bun.serve<PreviewSocket | DeviceHubSocket>({
     hostname: "127.0.0.1",
     port: options.port,
     idleTimeout: 255,
     // Same RPC body ceiling as agent-device; upload streams are supported too.
     maxRequestBodySize: 512 * 1024 * 1024,
-    websocket: preview.websocket,
+    websocket: {
+      maxPayloadLength: preview.websocket.maxPayloadLength,
+      backpressureLimit: preview.websocket.backpressureLimit,
+      closeOnBackpressureLimit: preview.websocket.closeOnBackpressureLimit,
+      idleTimeout: preview.websocket.idleTimeout,
+      open(ws) {
+        if ("nativeHub" in ws.data)
+          nativeHub.websocket.open(ws as ServerWebSocket<DeviceHubSocket>);
+        else preview.websocket.open(ws as ServerWebSocket<PreviewSocket>);
+      },
+      message(ws, message) {
+        if ("nativeHub" in ws.data)
+          nativeHub.websocket.message(ws as ServerWebSocket<DeviceHubSocket>, message);
+        else preview.websocket.message(ws as ServerWebSocket<PreviewSocket>, message);
+      },
+      close(ws) {
+        if ("nativeHub" in ws.data)
+          nativeHub.websocket.close(ws as ServerWebSocket<DeviceHubSocket>);
+        else preview.websocket.close(ws as ServerWebSocket<PreviewSocket>);
+      },
+    },
     async fetch(req, server) {
       const url = new URL(req.url);
       const auth = Buffer.from(req.headers.get("authorization") ?? "");
       const authenticated = auth.length === expected.length && timingSafeEqual(auth, expected);
+      if (url.pathname.startsWith("/simbox-device-hub")) {
+        if (!authenticated)
+          return new Response("Unauthorized", {
+            status: 401,
+            headers: { "cache-control": "no-store" },
+          });
+        return nativeHub.fetch(req, server as Server<DeviceHubSocket>);
+      }
       if (url.pathname.startsWith("/simbox-preview")) {
         if (!authenticated)
           return new Response("Unauthorized", {
             status: 401,
             headers: { "cache-control": "no-store" },
           });
-        return preview.fetch(req, server);
+        return preview.fetch(req, server as Server<PreviewSocket>);
       }
       // Probes must not keep an unused runner alive. Only authenticated device
       // work counts, and each request has a ceiling so hung work is bounded.
@@ -166,7 +209,10 @@ export function startGateway(options: {
     server,
     activity: () => ({ inFlight, lastActivityAt }),
     ready: Promise.resolve(),
-    stopPreview: preview.stop,
+    stopPreview: () => {
+      preview.stop();
+      nativeHub.stop();
+    },
   };
 }
 

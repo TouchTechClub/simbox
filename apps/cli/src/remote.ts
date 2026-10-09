@@ -5,6 +5,7 @@ import { configDir } from "./config.js";
 import { daemonBaseUrl, findAgentDevice } from "./connect.js";
 import type { ConnectInfo } from "./connect.js";
 import { sleep } from "./util.js";
+import { registerDevice } from "./device-registration.js";
 
 export const STARTUP_TIMEOUT_MS = 300_000;
 
@@ -165,6 +166,11 @@ export async function cmdExec(args: string[]): Promise<void> {
     child.on("error", reject);
     child.on("exit", (status) => resolve(status ?? 1));
   });
+  if (
+    code === 0 &&
+    !args.some((arg) => ["help", "--help", "-h", "--version", "version"].includes(arg))
+  )
+    registerDevice(info, { args });
   if (code !== 0) {
     process.stderr.write(
       "Simbox did not retry the device command (it may already have executed). Use `simbox exec session list` to inspect it; the next command refreshes the tunnel automatically.\n",

@@ -19,6 +19,7 @@ import { connectFlow, type ConnectInfo } from "./connect.js";
 import { openInBrowser } from "./open.js";
 import { fmtCountdown, sleep, Spinner } from "./util.js";
 import { waitForRemote, waitForAndroid } from "./remote.js";
+import { registerDevice } from "./device-registration.js";
 
 // ---- login ----
 
@@ -215,6 +216,7 @@ export async function cmdSim(opts: {
 
   info = await waitForRemote(info);
   if (opts.platform === "android") await waitForAndroid(info.runId);
+  registerDevice(info, { platform: opts.platform });
 
   if (json) {
     const payload = {
@@ -265,6 +267,16 @@ export async function cmdStop(): Promise<void> {
     return;
   }
   await stopRun(run.id);
+  if (run.tunnelUrl && run.daemonToken)
+    registerDevice(
+      {
+        runId: run.id,
+        tunnelUrl: run.tunnelUrl,
+        daemonToken: run.daemonToken,
+        expiresAt: run.expiresAt,
+      },
+      { stop: true },
+    );
   console.log(`${pc.green("✔")} Stop requested for run ${pc.bold(run.id)}.`);
 }
 

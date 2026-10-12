@@ -39,7 +39,8 @@ const TUNNEL_URL_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
 const REGISTER_ATTEMPTS = 3;
 const HEARTBEAT_FAILURE_LIMIT = 3;
 const TUNNEL_PROBE_TIMEOUT_MS = 15_000;
-const TUNNEL_PROBE_FAILURE_LIMIT = 2;
+const TUNNEL_RECONNECT_WINDOW_MS = 60_000;
+const TUNNEL_REPROBE_INTERVAL_MS = 10_000;
 const PROXY_PROBE_TIMEOUT_MS = 10_000;
 const PROXY_PROBE_FAILURE_LIMIT = 2;
 const PROXY_RESTART_LIMIT = 5; // daemon can die repeatedly on GH macOS runners
@@ -359,6 +360,17 @@ async function tunnelEdgeDead(): Promise<boolean> {
   }
 }
 
+/** Re-probe through cloudflared's reconnect window; true if never reachable. */
+async function tunnelStaysDead(): Promise<boolean> {
+  const deadline = Date.now() + TUNNEL_RECONNECT_WINDOW_MS;
+  while (Date.now() < deadline) {
+    await interruptibleSleep(TUNNEL_REPROBE_INTERVAL_MS);
+    if (state.shuttingDown || state.children.tunnel?.dead) return false;
+    if (!(await tunnelEdgeDead())) return false;
+  }
+  return true;
+}
+
 /**
  * Local proxy liveness. The proxy's embedded daemon can die while the proxy
  * process stays up — /health then returns {"ok":false,"error":"fetch failed"}
@@ -402,7 +414,6 @@ async function proxyUpstreamDead(): Promise<boolean> {
 
 async function supervise(): Promise<never> {
   let heartbeatFailures = 0;
-  let tunnelProbeFailures = 0;
   let proxyProbeFailures = 0;
   let lastDeviceSeenAt = Date.now(); // idle clock starts at boot
   for (;;) {
@@ -417,19 +428,18 @@ async function supervise(): Promise<never> {
     if (!childrenOk) await shutdown("child process died twice", 1);
 
     // --- tunnel liveness (edge-side; process can be a zombie) ---
+    // Quick tunnels hold a single edge connection, so every edge drop is a
+    // full outage that cloudflared usually heals in 10-30s on the same URL.
+    // Only a tunnel that stays dead is replaced: a new URL strands clients.
     if (!busy && !state.children.tunnel?.dead && (await tunnelEdgeDead())) {
-      tunnelProbeFailures += 1;
-      warn(`tunnel unreachable at edge (${tunnelProbeFailures}/${TUNNEL_PROBE_FAILURE_LIMIT})`);
-      if (tunnelProbeFailures >= TUNNEL_PROBE_FAILURE_LIMIT) {
+      warn("tunnel unreachable at edge; waiting for cloudflared to reconnect");
+      if (await tunnelStaysDead()) {
         warn("killing zombie cloudflared to force reconnect");
-        tunnelProbeFailures = 0;
         const t = state.children.tunnel!;
         t.dead = true; // guarantee handleDeadChildren sees it even if exit is slow
         t.proc.kill("SIGTERM");
         if (!(await handleDeadChildren())) await shutdown("tunnel restart failed", 1);
-      }
-    } else {
-      tunnelProbeFailures = 0;
+      } else info("tunnel reconnected");
     }
 
     // --- proxy liveness (upstream daemon can die inside a live proxy) ---

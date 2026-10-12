@@ -34,15 +34,68 @@ const SOCKET_PATHS = new Map<string, "inventory" | "ios" | "android">([
 ] as const);
 const NO_CACHE = { "cache-control": "no-store, no-transform" };
 
+interface Inventory {
+  body?: string;
+  at: number;
+  refresh?: Promise<void>;
+}
+
 /** The native Device panel protocol. Deliberately excludes hub exec and shell sockets. */
 export function createDeviceHubGateway(options: {
   port: () => Promise<number>;
   activity: () => void;
   video: (req: Request) => Promise<Response | undefined>;
+  /** A listing younger than this is served without asking the hub again. */
+  inventoryFreshMs?: number;
+  /** How long discovery waits on a slow listing before falling back. */
+  inventoryWaitMs?: number;
 }) {
   const sockets = new Set<ServerWebSocket<DeviceHubSocket>>();
   const upstreams = new Set<WebSocket>();
+  // Every hub listing shells out to simctl/adb, which takes 10s+ on a loaded
+  // runner. Callers share one listing in flight and fall back to the last good
+  // one, so discovery answers within S5's deadline instead of failing.
+  const inventories = new Map<string, Inventory>();
   let stopped = false;
+  const inventory = async (origin: string, search: string): Promise<Response> => {
+    let entry = inventories.get(search);
+    if (!entry) inventories.set(search, (entry = { at: 0 }));
+    if (entry.body !== undefined && Date.now() - entry.at < (options.inventoryFreshMs ?? 2_000))
+      return inventoryResponse(entry.body);
+    const current = entry;
+    current.refresh ??= fetch(`${origin}/api/devices${search}`, {
+      signal: AbortSignal.timeout(60_000),
+      redirect: "error",
+    })
+      .then(async (upstream) => {
+        const body = await upstream.text();
+        if (!upstream.ok) throw new Error(`Hub listing failed (${upstream.status})`);
+        JSON.parse(body);
+        current.body = body;
+        current.at = Date.now();
+      })
+      .finally(() => {
+        current.refresh = undefined;
+      });
+    let waitTimer: ReturnType<typeof setTimeout> | undefined;
+    const settled = await Promise.race([
+      current.refresh.then(
+        () => true,
+        () => false,
+      ),
+      new Promise<null>((resolve) => {
+        waitTimer = setTimeout(() => resolve(null), options.inventoryWaitMs ?? 8_000);
+      }),
+    ]);
+    clearTimeout(waitTimer);
+    if (current.body !== undefined) return inventoryResponse(current.body);
+    return settled === false
+      ? new Response("Device hub unavailable", { status: 502, headers: NO_CACHE })
+      : new Response("Device hub listing devices; retry shortly", {
+          status: 503,
+          headers: NO_CACHE,
+        });
+  };
   return {
     async fetch(req: Request, server: Server<DeviceHubSocket>): Promise<Response | undefined> {
       if (stopped) return new Response("Device hub stopped", { status: 503 });
@@ -82,6 +135,7 @@ export function createDeviceHubGateway(options: {
       if (!port) return new Response("Device hub starting; retry shortly", { status: 503 });
       const origin = `http://127.0.0.1:${port}`;
       if (!upgrade) {
+        if (req.method === "GET" && path === "/api/devices") return inventory(origin, url.search);
         const body = req.method === "POST" ? await req.text() : undefined;
         if (body && Buffer.byteLength(body) > 16_384)
           return new Response("Payload too large", { status: 413 });
@@ -94,6 +148,8 @@ export function createDeviceHubGateway(options: {
             signal: AbortSignal.any([req.signal, AbortSignal.timeout(180_000)]),
             redirect: "error",
           });
+          // Boot/shutdown changes the listing; never serve the old one as fresh.
+          if (req.method === "POST") for (const entry of inventories.values()) entry.at = 0;
           const headers = new Headers(upstream.headers);
           headers.delete("set-cookie");
           headers.set("cache-control", NO_CACHE["cache-control"]);
@@ -216,6 +272,10 @@ export function createDeviceHubGateway(options: {
       upstreams.clear();
     },
   };
+}
+
+function inventoryResponse(body: string): Response {
+  return new Response(body, { headers: { "content-type": "application/json", ...NO_CACHE } });
 }
 
 function releaseInput(data: DeviceHubSocket) {

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { startGateway } from "../packages/agent/src/gateway";
+import { createDeviceHubGateway } from "../packages/agent/src/device-hub-gateway";
 
 test("native device gateway authenticates discovery, boot, screenshot and video; never admits shell routes or frames", async () => {
   const requests: Array<{ path: string; method: string; auth: string | null }> = [];
@@ -144,3 +145,64 @@ test("native discovery reports a warming hub promptly and connects after lazy in
     void hub.stop(true);
   }
 }, 5000);
+
+test("native discovery shares slow hub listings and answers from the last good one", async () => {
+  let listings = 0;
+  let delayMs = 300;
+  const hub = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(req) {
+      const url = new URL(req.url);
+      if (url.pathname === "/api/devices") {
+        listings++;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        return Response.json({ simulators: [{ id: "A", booted: listings > 1 }], emulators: [] });
+      }
+      if (url.pathname === "/api/devices/boot") return Response.json({ ok: true });
+      return new Response("missing", { status: 404 });
+    },
+  });
+  const gateway = createDeviceHubGateway({
+    port: async () => hub.port!,
+    activity() {},
+    video: async () => undefined,
+    inventoryFreshMs: 1_000,
+    inventoryWaitMs: 100,
+  });
+  const get = () =>
+    gateway.fetch(
+      new Request("http://runner/simbox-device-hub/api/devices"),
+      undefined as never,
+    ) as Promise<Response>;
+  try {
+    // Cold and slow: retryable 503s, but only one listing reaches the hub.
+    const cold = await Promise.all([get(), get(), get()]);
+    expect(cold.map((res) => res.status)).toEqual([503, 503, 503]);
+    expect(listings).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const warm = await get();
+    expect(warm.status).toBe(200);
+    expect(await warm.json()).toEqual({ simulators: [{ id: "A", booted: false }], emulators: [] });
+    expect(listings).toBe(1);
+
+    // A boot invalidates it; a slow relisting falls back to the last good listing.
+    await gateway.fetch(
+      new Request("http://runner/simbox-device-hub/api/devices/boot", {
+        method: "POST",
+        body: JSON.stringify({ platform: "ios", id: "A" }),
+      }),
+      undefined as never,
+    );
+    const stale = await get();
+    expect(stale.status).toBe(200);
+    expect(await stale.json()).toEqual({ simulators: [{ id: "A", booted: false }], emulators: [] });
+    delayMs = 0;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const fresh = await get();
+    expect(await fresh.json()).toEqual({ simulators: [{ id: "A", booted: true }], emulators: [] });
+  } finally {
+    gateway.stop();
+    hub.stop(true);
+  }
+});

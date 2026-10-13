@@ -1,4 +1,5 @@
 import { rmSync } from "node:fs";
+import { clearCachedRun, writeCachedRun } from "./run-cache.js";
 import pc from "picocolors";
 import type { PublicRun, RepoStatusResponse } from "@simbox/shared";
 import { parseRunnerInput, formatRunner } from "@simbox/shared";
@@ -216,6 +217,7 @@ export async function cmdSim(opts: {
 
   info = await waitForRemote(info);
   if (opts.platform === "android") await waitForAndroid(info.runId);
+  writeCachedRun(info);
   registerDevice(info, { platform: opts.platform });
 
   if (json) {
@@ -267,6 +269,7 @@ export async function cmdStop(): Promise<void> {
     return;
   }
   await stopRun(run.id);
+  clearCachedRun();
   if (run.tunnelUrl && run.daemonToken)
     registerDevice(
       {

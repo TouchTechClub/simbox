@@ -6,6 +6,7 @@ import { daemonBaseUrl, findAgentDevice } from "./connect.js";
 import type { ConnectInfo } from "./connect.js";
 import { sleep } from "./util.js";
 import { registerDevice } from "./device-registration.js";
+import { clearCachedRun, readCachedRun, writeCachedRun } from "./run-cache.js";
 
 export const STARTUP_TIMEOUT_MS = 300_000;
 
@@ -141,17 +142,23 @@ export async function cmdExec(args: string[]): Promise<void> {
   }
   const bin = findAgentDevice();
   if (!bin) throw new CliError("Install agent-device first: npm i -g agent-device@0.21.20");
-  const initial = await refreshRemote();
-  if (!initial) throw new CliError("No live run. Start one with `simbox sim`.");
-  if (
-    args.some(
-      (arg, i) =>
-        arg === "--platform=android" || (arg === "--platform" && args[i + 1] === "android"),
-    )
-  ) {
-    await waitForAndroid(initial.runId);
+  const android = args.some(
+    (arg, i) => arg === "--platform=android" || (arg === "--platform" && args[i + 1] === "android"),
+  );
+  // A reachable cached endpoint skips the API round-trip. Android commands
+  // still ask the API, which alone knows whether the AVD is ready.
+  let info = android ? null : readCachedRun();
+  if (info && !(await probeRemote(info))) info = null;
+  if (!info) {
+    const initial = await refreshRemote();
+    if (!initial) {
+      clearCachedRun();
+      throw new CliError("No live run. Start one with `simbox sim`.");
+    }
+    if (android) await waitForAndroid(initial.runId);
+    info = await waitForRemote(initial);
   }
-  const info = await waitForRemote(initial);
+  writeCachedRun(info);
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     AGENT_DEVICE_DAEMON_AUTH_TOKEN: info.daemonToken,

@@ -63,7 +63,7 @@ export const api = Cloudflare.Worker("simbox-api", {
     // Plain values: an unset GitHub variable arrives as "", which a Config
     // default would not replace.
     CLOUDFLARE_ACCOUNT_ID: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
-    TUNNEL_ZONE: process.env.TUNNEL_ZONE || "runnerbox.dpdns.org",
+    TUNNEL_ZONE: process.env.TUNNEL_ZONE || "simboxtouchtech.dpdns.org",
     ...(process.env.CLOUDFLARE_TUNNEL_API_TOKEN
       ? { CLOUDFLARE_TUNNEL_API_TOKEN: Config.Redacted("CLOUDFLARE_TUNNEL_API_TOKEN") }
       : {}),

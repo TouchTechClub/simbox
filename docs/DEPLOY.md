@@ -100,7 +100,7 @@ Add as custom domains in the CF dashboard (or `Cloudflare.Domain` resources in `
 
 ### Runner tunnels
 
-Runners get a named Cloudflare tunnel per run at `r-<16 hex>.<TUNNEL_ZONE>` (default `runnerbox.dpdns.org`). A named tunnel keeps four edge connections and one URL for the whole run; a quick tunnel keeps one connection, so every edge drop is an outage and a restart changes the URL. Hostnames must sit one label under a Cloudflare zone so free Universal SSL covers them.
+Runners get a named Cloudflare tunnel per run at `r-<16 hex>.<TUNNEL_ZONE>` (default `simboxtouchtech.dpdns.org`). A named tunnel keeps four edge connections and one URL for the whole run; a quick tunnel keeps one connection, so every edge drop is an outage and a restart changes the URL. Hostnames must sit one label under a Cloudflare zone so free Universal SSL covers them.
 
 Create a token (CF dashboard → My Profile → API Tokens → Create Custom Token):
 
@@ -109,7 +109,7 @@ Create a token (CF dashboard → My Profile → API Tokens → Create Custom Tok
 
 Save it as the `CLOUDFLARE_TUNNEL_API_TOKEN` secret and redeploy. Without that secret the deploy passes `CLOUDFLARE_API_TOKEN` instead (it currently carries these permissions too), so the worker then holds the deploy token; a dedicated token keeps the worker to tunnel and DNS access only. If neither token can provision, `/v1/runs/tunnel` fails and runners keep using quick tunnels. The API deletes a run's tunnel and DNS record when the agent deregisters; a 10-minute cron also releases ended or expired runs and deletes `simbox-run-*` tunnels and `simbox run` DNS records with no live run.
 
-To move zones, set the `TUNNEL_ZONE` variable and redeploy. S5 Code accepts `r-<16 hex>` under `runnerbox.dpdns.org` and `simbox.dpdns.org` (see S5's `SimboxDeviceHost.ts`).
+To move zones, set the `TUNNEL_ZONE` variable and redeploy. S5 Code accepts `r-<16 hex>` under `simboxtouchtech.dpdns.org` and `simbox.dpdns.org` (see S5's `SimboxDeviceHost.ts`).
 
 ---
 
@@ -211,7 +211,7 @@ No PAT needed — the `runner` job mints an installation token via `actions/crea
 | ----------------------- | -------------------------------------------------------------------- |
 | `CLOUDFLARE_ACCOUNT_ID` | CF dashboard → account ID                                            |
 | `APP_URL`               | `https://simbox.touchtech.club` (or workers.dev URL until DNS lands) |
-| `TUNNEL_ZONE`           | optional — runner tunnel zone, default `runnerbox.dpdns.org`         |
+| `TUNNEL_ZONE`           | optional — runner tunnel zone, default `simboxtouchtech.dpdns.org`   |
 
 ### npm trusted publisher
 

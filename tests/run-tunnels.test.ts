@@ -26,7 +26,7 @@ function fakeCloudflare() {
       const name = url.searchParams.get("name");
       // runnerbox is delegated to Cloudflare; a lapsed zone gets no NS answer.
       return Response.json(
-        name === "runnerbox.dpdns.org"
+        name === "simboxtouchtech.dpdns.org"
           ? { Status: 0, Answer: [{ type: 2, data: "vin.ns.cloudflare.com." }] }
           : { Status: 0, Authority: [{ type: 6, data: "ns1.dpdns.org." }] },
       );
@@ -97,7 +97,7 @@ test("runs get one named tunnel, foreign runs get none, and ended or orphaned tu
     ...base,
     CLOUDFLARE_ACCOUNT_ID: "acct",
     CLOUDFLARE_TUNNEL_API_TOKEN: "cf-token",
-    TUNNEL_ZONE: "runnerbox.dpdns.org",
+    TUNNEL_ZONE: "simboxtouchtech.dpdns.org",
   } satisfies Env;
   const db = createDb(env);
   const waits: Promise<unknown>[] = [];
@@ -162,7 +162,7 @@ test("runs get one named tunnel, foreign runs get none, and ended or orphaned tu
     expect(first.status).toBe(200);
     const named = (await first.json()) as { tunnelUrl: string; connectorToken: string };
     const hostname = new URL(named.tunnelUrl).hostname;
-    expect(hostname).toMatch(/^r-[0-9a-f]{16}\.runnerbox\.dpdns\.org$/);
+    expect(hostname).toMatch(/^r-[0-9a-f]{16}\.simboxtouchtech\.dpdns\.org$/);
     const [tunnel] = cloudflare.tunnels.values();
     expect(tunnel!.name).toBe("simbox-run-run-1");
     expect(named.connectorToken).toBe(`connector-token-for-${tunnel!.id}`);
@@ -205,7 +205,7 @@ test("runs get one named tunnel, foreign runs get none, and ended or orphaned tu
     cloudflare.tunnels.set("other", { id: "other", name: "s5code-tunnel", created_at: old });
     cloudflare.records.set("dns-orphan", {
       id: "dns-orphan",
-      name: "r-0000000000000000.runnerbox.dpdns.org",
+      name: "r-0000000000000000.simboxtouchtech.dpdns.org",
       content: "orphan.cfargotunnel.com",
       comment: "simbox run gone",
       created_on: old,

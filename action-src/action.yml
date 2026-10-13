@@ -64,8 +64,8 @@ runs:
           fi
         fi
         case "$(uname -s)-$(uname -m)" in
-          Darwin-arm64) TARBALL=simbox-agent-darwin-arm64.tar.gz; SHA=00fbc86faa2b11f8423d712739a002707c4e60e1db6ac21257da6ab779c2c4b6 ;;
-          Linux-x86_64) TARBALL=simbox-agent-linux-amd64.tar.gz; SHA=32d664a5591c1622b24fc233e0918a44d0bb79c019a7d128f9d84cf94caec072 ;;
+          Darwin-arm64) TARBALL=simbox-agent-darwin-arm64.tar.gz; SHA=ca80bfa3640627facfd629b954cb454b11daf70731e998a9bba6386acbd3b7fe ;;
+          Linux-x86_64) TARBALL=simbox-agent-linux-amd64.tar.gz; SHA=0eac6a7ea69814562ec3b24c7f7205e866dad7ce4ce639c4d1fb395bfab781e7 ;;
           *) echo "Unsupported Simbox runner OS/architecture" >&2; exit 1 ;;
         esac
         curl -fsSL "https://github.com/TouchTechClub/simbox/releases/download/${{ inputs.version }}/$TARBALL" -o "$TARBALL"

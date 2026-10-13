@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, desc, eq, isNull, notInArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, notInArray } from "drizzle-orm";
 import { createDb, schema } from "@simbox/db";
 import type { Database } from "@simbox/db";
 import type {
@@ -8,6 +8,8 @@ import type {
   RunHeartbeatRequest,
   RunRegisterRequest,
   RunState,
+  RunTunnelRequest,
+  RunTunnelResponse,
 } from "@simbox/shared";
 import {
   HARD_EXIT_MINUTES,
@@ -23,6 +25,7 @@ import type { RepoRow, RunRow } from "../db";
 import { getLatestActiveRun, getRepoForUser, isTerminal } from "../db";
 import { apiError, newId, nowSeconds, toPublicRun, toRunSummary } from "../util";
 import { getRunnerSettings } from "../runners";
+import { provisionRunTunnel, releaseRunTunnel, tunnelsConfigured } from "../tunnels";
 import {
   bindGhRunId,
   cancelWorkflowRun,
@@ -428,27 +431,20 @@ runRoutes.post("/v1/runs/:id/stop", requireUser, async (c) => {
 // Runner-authenticated endpoints (Bearer SIMBOX_TOKEN)
 // ---------------------------------------------------------------------------
 
-// POST /v1/runs/register — agent announces its tunnel.
-// Security: the run must be one WE dispatched for THIS repo — otherwise a
-// leaked token could attach foreign tunnels to arbitrary runs.
-runRoutes.post("/v1/runs/register", requireRunnerToken, async (c) => {
-  const repo = c.get("repo");
-  const db = createDb(c.env);
-  const body = await c.req.json<RunRegisterRequest>().catch(() => null);
-  if (!body || typeof body.ghRunId !== "number" || !body.tunnelUrl || !body.daemonToken) {
-    return apiError(c, 400, "bad_request", "Expected {ghRunId, tunnelUrl, daemonToken, versions}.");
-  }
-
-  // Normal path: gh_run_id was bound at dispatch time.
-  let run = await db
-    .select()
-    .from(schema.runs)
-    .where(eq(schema.runs.gh_run_id, body.ghRunId))
-    .get();
+/**
+ * The run a runner may act on: matched by gh_run_id, or adopted onto the single
+ * unbound dispatching run for this repo when ensure's bind poll timed out and
+ * the webhook has not arrived. Null unless WE dispatched it for THIS repo and
+ * it can still go (or is) live.
+ */
+async function acceptRunnerRun(
+  db: Database,
+  repo: RepoRow,
+  ghRunId: number,
+): Promise<RunRow | null> {
+  let run = await db.select().from(schema.runs).where(eq(schema.runs.gh_run_id, ghRunId)).get();
 
   if (!run) {
-    // Fallback: ensure's bind poll timed out and the webhook hasn't arrived —
-    // adopt the run id onto the single unbound dispatching run for this repo.
     run = await db
       .select()
       .from(schema.runs)
@@ -465,9 +461,9 @@ runRoutes.post("/v1/runs/register", requireRunnerToken, async (c) => {
     if (run) {
       await db
         .update(schema.runs)
-        .set({ gh_run_id: body.ghRunId })
+        .set({ gh_run_id: ghRunId })
         .where(and(eq(schema.runs.id, run.id), isNull(schema.runs.gh_run_id)));
-      run = { ...run, gh_run_id: body.ghRunId };
+      run = { ...run, gh_run_id: ghRunId };
     }
   }
 
@@ -480,7 +476,44 @@ runRoutes.post("/v1/runs/register", requireRunnerToken, async (c) => {
       run.state !== "queued" &&
       run.state !== "booting" &&
       run.state !== "live")
-  ) {
+  )
+    return null;
+  return run;
+}
+
+// POST /v1/runs/tunnel — a named Cloudflare tunnel for this run. Agents fall
+// back to a quick tunnel on any failure, including 503 when unconfigured.
+runRoutes.post("/v1/runs/tunnel", requireRunnerToken, async (c) => {
+  const db = createDb(c.env);
+  const body = await c.req.json<RunTunnelRequest>().catch(() => null);
+  if (!body || typeof body.ghRunId !== "number")
+    return apiError(c, 400, "bad_request", "Expected {ghRunId}.");
+  if (!tunnelsConfigured(c.env))
+    return apiError(c, 503, "tunnels_unavailable", "Named tunnels are not configured.");
+  const run = await acceptRunnerRun(db, c.get("repo"), body.ghRunId);
+  if (!run)
+    return apiError(c, 403, "run_not_accepted", "No dispatched run matching this gh_run_id.");
+  try {
+    const tunnel: RunTunnelResponse = await provisionRunTunnel(c.env, db, run);
+    return c.json(tunnel);
+  } catch (error) {
+    console.error("tunnel provisioning failed", run.id, String(error));
+    return apiError(c, 502, "tunnel_failed", "Could not provision a named tunnel.");
+  }
+});
+
+// POST /v1/runs/register — agent announces its tunnel.
+// Security: the run must be one WE dispatched for THIS repo — otherwise a
+// leaked token could attach foreign tunnels to arbitrary runs.
+runRoutes.post("/v1/runs/register", requireRunnerToken, async (c) => {
+  const repo = c.get("repo");
+  const db = createDb(c.env);
+  const body = await c.req.json<RunRegisterRequest>().catch(() => null);
+  if (!body || typeof body.ghRunId !== "number" || !body.tunnelUrl || !body.daemonToken) {
+    return apiError(c, 400, "bad_request", "Expected {ghRunId, tunnelUrl, daemonToken, versions}.");
+  }
+  const run = await acceptRunnerRun(db, repo, body.ghRunId);
+  if (!run) {
     return apiError(c, 403, "run_not_accepted", "No dispatched run matching this gh_run_id.");
   }
 
@@ -562,5 +595,23 @@ runRoutes.post("/v1/runs/deregister", requireRunnerToken, async (c) => {
         ),
       );
   }
+  // Release the run's named tunnel now; the cron sweep retries any failure.
+  const ended = await db
+    .select()
+    .from(schema.runs)
+    .where(
+      and(
+        eq(schema.runs.repo_full_name, repo.full_name),
+        inArray(schema.runs.state, ["ended", "failed"]),
+        isNotNull(schema.runs.tunnel_id),
+      ),
+    )
+    .all();
+  if (ended.length)
+    c.executionCtx.waitUntil(
+      Promise.all(ended.map((run) => releaseRunTunnel(c.env, db, run))).catch((error) =>
+        console.error("tunnel release failed", String(error)),
+      ),
+    );
   return c.json({ ok: true });
 });

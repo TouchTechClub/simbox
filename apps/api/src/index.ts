@@ -8,6 +8,8 @@ import { runRoutes } from "./routes/runs";
 import { runnerRoutes } from "./routes/runners";
 import { previewRoutes } from "./routes/preview";
 import { webhookRoutes } from "./routes/webhooks";
+import type { Env } from "./env";
+import { sweepRunTunnels } from "./tunnels";
 
 const app = new Hono<AppContext>();
 
@@ -39,4 +41,15 @@ app.onError((err, c) => {
   return c.json({ error: "internal", message: "Internal error." }, 500);
 });
 
-export default app;
+export default Object.assign(app, {
+  // Cron: release tunnels of ended/expired runs and delete orphans.
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(
+      sweepRunTunnels(env)
+        .then((result) => {
+          if (result.released || result.orphans) console.log("tunnel sweep", result);
+        })
+        .catch((error) => console.error("tunnel sweep failed", String(error))),
+    );
+  },
+});

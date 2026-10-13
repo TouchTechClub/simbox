@@ -46,7 +46,11 @@ function upstreamUrl(run: RunRow, path: string): string {
     origin.username ||
     origin.password ||
     origin.port ||
-    !/^[a-z0-9-]+\.trycloudflare\.com$/.test(origin.hostname)
+    // A quick tunnel, or exactly the named tunnel provisioned for this run.
+    !(
+      /^[a-z0-9-]+\.trycloudflare\.com$/.test(origin.hostname) ||
+      (!!run.tunnel_hostname && origin.hostname === run.tunnel_hostname)
+    )
   )
     throw new Error("Invalid tunnel");
   return `${origin.origin}/simbox-preview/${path}`;

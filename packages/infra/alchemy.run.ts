@@ -56,7 +56,20 @@ export const api = Cloudflare.Worker("simbox-api", {
     BETTER_AUTH_SECRET: Config.Redacted("BETTER_AUTH_SECRET"),
 
     DEMO_MODE: Config.String("DEMO_MODE").pipe(Config.withDefault("false")),
+
+    // Named runner tunnels (apps/api/src/tunnels.ts). Runner hostnames sit one
+    // label under TUNNEL_ZONE, inside free Universal SSL. Without the token
+    // runners keep using quick tunnels, so a deploy never depends on it.
+    // Plain values: an unset GitHub variable arrives as "", which a Config
+    // default would not replace.
+    CLOUDFLARE_ACCOUNT_ID: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
+    TUNNEL_ZONE: process.env.TUNNEL_ZONE || "runnerbox.dpdns.org",
+    ...(process.env.CLOUDFLARE_TUNNEL_API_TOKEN
+      ? { CLOUDFLARE_TUNNEL_API_TOKEN: Config.Redacted("CLOUDFLARE_TUNNEL_API_TOKEN") }
+      : {}),
   },
+  // Releases tunnels of ended runs and sweeps orphans.
+  crons: ["*/10 * * * *"],
   dev: {
     port: 8787,
   },

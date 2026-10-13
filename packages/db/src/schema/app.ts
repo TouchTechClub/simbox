@@ -59,6 +59,11 @@ export const runs = sqliteTable(
     runner: text("runner", { mode: "json" }).$type<RunnerTarget>(),
     tunnel_url: text("tunnel_url"),
     daemon_token: text("daemon_token"),
+    // Named Cloudflare tunnel provisioned for this run; null for quick tunnels
+    // and once cleanup has deleted it.
+    tunnel_id: text("tunnel_id"),
+    tunnel_hostname: text("tunnel_hostname"),
+    tunnel_dns_record_id: text("tunnel_dns_record_id"),
     active_devices: integer("active_devices").notNull().default(0),
     android_ready: integer("android_ready").notNull().default(0),
     created_at: integer("created_at").notNull(),

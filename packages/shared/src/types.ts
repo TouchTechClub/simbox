@@ -104,6 +104,17 @@ export interface RunRegisterRequest {
   };
 }
 
+export interface RunTunnelRequest {
+  ghRunId: number;
+}
+
+/** A named Cloudflare tunnel for one run: stable URL, several edge connections. */
+export interface RunTunnelResponse {
+  tunnelUrl: string;
+  /** cloudflared connector token; pass as TUNNEL_TOKEN, never on argv or in logs. */
+  connectorToken: string;
+}
+
 export interface RunHeartbeatRequest {
   ghRunId: number;
   activeDevices: number;

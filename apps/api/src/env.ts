@@ -16,6 +16,15 @@ export interface Env {
   API_URL: string;
   /** Web app origin — used for CORS, OAuth redirects and CLI device verify URLs. */
   APP_URL: string;
+  /** Cloudflare account that owns runner tunnels. */
+  CLOUDFLARE_ACCOUNT_ID?: string;
+  /**
+   * Token with Account › Cloudflare Tunnel: Edit and, on TUNNEL_ZONE,
+   * Zone: Read + DNS: Edit. Unset → runners fall back to quick tunnels.
+   */
+  CLOUDFLARE_TUNNEL_API_TOKEN?: string;
+  /** Zone runner hostnames live directly under (free Universal SSL covers one level). */
+  TUNNEL_ZONE?: string;
   /** Dev-only: "true" bypasses user auth and serves seeded demo data. */
   DEMO_MODE?: string;
 }

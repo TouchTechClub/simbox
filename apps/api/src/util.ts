@@ -64,7 +64,7 @@ export function bytesToBase64Url(bytes: Uint8Array): string {
 
 export function apiError<E extends HonoEnv>(
   c: Context<E>,
-  status: 400 | 401 | 403 | 404 | 409 | 500,
+  status: 400 | 401 | 403 | 404 | 409 | 500 | 502 | 503,
   error: string,
   message: string,
 ): Response {

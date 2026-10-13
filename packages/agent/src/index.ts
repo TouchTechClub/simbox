@@ -13,7 +13,7 @@ import {
   PROD_API_URL,
   PROXY_PORT,
 } from "@simbox/shared";
-import type { RunRegisterRequest } from "@simbox/shared";
+import type { RunRegisterRequest, RunTunnelResponse } from "@simbox/shared";
 import { PINS } from "./pins.js";
 import pkg from "../package.json" with { type: "json" };
 import { addMask, error, info, warn } from "./log.js";
@@ -64,6 +64,8 @@ const state = {
   ghRunAttempt: Bun.env.GITHUB_RUN_ATTEMPT ?? "?",
   daemonToken: "",
   tunnelUrl: "",
+  /** Named tunnel for this run; null → quick tunnel (older API, or provisioning failed). */
+  named: null as RunTunnelResponse | null,
   agentDeviceBin: "",
   cloudflaredBin: "",
   androidReady: false,
@@ -148,6 +150,53 @@ interface TunnelSpawn {
 }
 
 function spawnTunnel(): TunnelSpawn {
+  return state.named ? spawnNamedTunnel(state.named) : spawnQuickTunnel();
+}
+
+/**
+ * A named tunnel keeps several edge connections and one URL for the run. Its
+ * token stays in the environment (never argv); it is up once the first edge
+ * connection registers.
+ */
+function spawnNamedTunnel(named: RunTunnelResponse): TunnelSpawn {
+  const proc = Bun.spawn(
+    [state.cloudflaredBin, "tunnel", "--no-autoupdate", "--protocol", "http2", "run"],
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: "ignore",
+      env: { ...Bun.env, TUNNEL_TOKEN: named.connectorToken },
+    },
+  );
+  const child = track("cloudflared", proc);
+  let settled = false;
+  const url = new Promise<string>((resolve, reject) => {
+    const deadline = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        reject(new Error(`no edge connection within ${TUNNEL_URL_TIMEOUT_MS / 1000}s`));
+      }
+    }, TUNNEL_URL_TIMEOUT_MS);
+    pumpLines(proc.stderr, "cloudflared", (line) => {
+      if (!settled && line.includes("Registered tunnel connection")) {
+        settled = true;
+        clearTimeout(deadline);
+        resolve(named.tunnelUrl);
+      }
+    });
+    proc.exited.then((code) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(deadline);
+        reject(new Error(`cloudflared exited (code ${code}) before connecting`));
+      }
+    });
+  });
+  pumpLines(proc.stdout, "cloudflared");
+  return { child, url };
+}
+
+function spawnQuickTunnel(): TunnelSpawn {
   const proc = Bun.spawn(
     [
       state.cloudflaredBin,
@@ -206,6 +255,30 @@ function isRetriable(err: unknown): boolean {
     return true; // 5xx retriable
   }
   return true; // network errors retriable
+}
+
+/** Ask the API for a named tunnel; any failure means a quick tunnel instead. */
+async function requestNamedTunnel(): Promise<RunTunnelResponse | null> {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const named = await api().tunnel({ ghRunId: state.ghRunId });
+      addMask(named.connectorToken);
+      addMask(named.tunnelUrl);
+      addMask(new URL(named.tunnelUrl).hostname);
+      info("named tunnel provisioned");
+      return named;
+    } catch (err) {
+      // 4xx (unconfigured, older API, rejected run) will not change on retry.
+      if (err instanceof HttpError && err.status < 500) {
+        info(`named tunnel unavailable (HTTP ${err.status}); using a quick tunnel`);
+        return null;
+      }
+      warn(`named tunnel request failed: ${String(err).slice(0, 200)}`);
+      if (attempt < 2) await Bun.sleep(2000);
+    }
+  }
+  info("using a quick tunnel");
+  return null;
 }
 
 async function register(): Promise<void> {
@@ -316,7 +389,7 @@ async function handleDeadChildren(): Promise<boolean> {
       error("cloudflared exhausted its restart budget — exiting");
       return false;
     }
-    warn("restarting cloudflared (new tunnel URL)");
+    warn(`restarting cloudflared${state.named ? "" : " (new tunnel URL)"}`);
     const t = spawnTunnel();
     state.children.tunnel = t.child;
     t.child.restarts = c.restarts + 1;
@@ -552,7 +625,15 @@ async function main(): Promise<void> {
   addMask(state.daemonToken);
   // Filter by URL *pattern* (not just the known value) so the very stderr line
   // the URL is parsed from is never relayed to the log.
-  setSecretFilter((line) => line.includes(state.daemonToken) || TUNNEL_URL_RE.test(line));
+  // A named tunnel's cloudflared logs its ingress hostname; never relay it.
+  setSecretFilter(
+    (line) =>
+      line.includes(state.daemonToken) ||
+      TUNNEL_URL_RE.test(line) ||
+      (!!state.named &&
+        (line.includes(new URL(state.named.tunnelUrl).hostname) ||
+          line.includes(state.named.connectorToken))),
+  );
 
   // 4. agent-device proxy
   state.children.proxy = spawnProxy();
@@ -585,14 +666,31 @@ async function main(): Promise<void> {
     warn,
   });
 
-  // 5. cloudflared quick tunnel — wait for the URL.
-  const tunnel = spawnTunnel();
+  // 5. cloudflared — a named tunnel when the API provisions one, else a quick
+  // tunnel. Either way, wait for the URL.
+  state.named = await requestNamedTunnel();
+  let tunnel = spawnTunnel();
   state.children.tunnel = tunnel.child;
   try {
     state.tunnelUrl = await tunnel.url;
   } catch (err) {
-    error(`tunnel never came up: ${String(err).slice(0, 300)}`);
-    await shutdown("no tunnel URL", 1);
+    if (state.named) {
+      warn(`named tunnel did not connect (${String(err).slice(0, 200)}); using a quick tunnel`);
+      tunnel.child.dead = true;
+      tunnel.child.proc.kill("SIGTERM");
+      state.named = null;
+      tunnel = spawnTunnel();
+      state.children.tunnel = tunnel.child;
+      try {
+        state.tunnelUrl = await tunnel.url;
+      } catch (quickErr) {
+        error(`tunnel never came up: ${String(quickErr).slice(0, 300)}`);
+        await shutdown("no tunnel URL", 1);
+      }
+    } else {
+      error(`tunnel never came up: ${String(err).slice(0, 300)}`);
+      await shutdown("no tunnel URL", 1);
+    }
   }
   addMask(state.tunnelUrl);
   // The local origin is ready; public DNS/edge readiness is checked by the

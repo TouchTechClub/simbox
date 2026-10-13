@@ -2,7 +2,13 @@
  * Thin client for the simbox API — everything is POST + Bearer SIMBOX_TOKEN.
  * Contracts come from @simbox/shared.
  */
-import type { RunDeregisterRequest, RunHeartbeatRequest, RunRegisterRequest } from "@simbox/shared";
+import type {
+  RunDeregisterRequest,
+  RunHeartbeatRequest,
+  RunRegisterRequest,
+  RunTunnelRequest,
+  RunTunnelResponse,
+} from "@simbox/shared";
 
 export class HttpError extends Error {
   constructor(
@@ -39,6 +45,14 @@ export class ApiClient {
       throw new HttpError(res.status, await res.text().catch(() => ""));
     }
     return res;
+  }
+
+  async tunnel(body: RunTunnelRequest): Promise<RunTunnelResponse> {
+    const res = await this.post("/v1/runs/tunnel", body, 30_000);
+    const named = (await res.json()) as RunTunnelResponse;
+    if (!named?.tunnelUrl?.startsWith("https://") || !named.connectorToken)
+      throw new Error("malformed tunnel response");
+    return named;
   }
 
   register(body: RunRegisterRequest): Promise<Response> {

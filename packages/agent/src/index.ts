@@ -28,6 +28,7 @@ import {
 import { ApiClient, HttpError } from "./api.js";
 import { countActiveDevices } from "./devices.js";
 import { run } from "./proc.js";
+import { waitForAuthoritativeDns } from "./dns.js";
 import { startGateway } from "./gateway.js";
 import { createPreviewHub } from "./preview-hub.js";
 import { healthyProxy, waitForProxy } from "./health.js";
@@ -693,6 +694,10 @@ async function main(): Promise<void> {
     }
   }
   addMask(state.tunnelUrl);
+  // Never hand out a named hostname before its DNS record is served: an early
+  // lookup caches NXDOMAIN on the client's resolver for half an hour.
+  if (state.named && !(await waitForAuthoritativeDns(new URL(state.tunnelUrl).hostname)))
+    warn("named tunnel DNS not visible on its nameservers yet; registering anyway");
   // The local origin is ready; public DNS/edge readiness is checked by the
   // client. Hairpin probes from GH runners can fail while clients can reach it.
   info("tunnel up (url registered + masked)");

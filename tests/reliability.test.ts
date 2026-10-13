@@ -451,3 +451,26 @@ describe("runner activity gateway", () => {
     }
   });
 });
+
+test("iOS runners boot one default simulator without warmup, and its failure is non-fatal", async () => {
+  const events: string[] = [];
+  await preparePlatforms({
+    warmIOS: false,
+    ios: async () => {
+      throw new Error("full warmup must not run");
+    },
+    bootIOS: async () => {
+      events.push("boot");
+      throw new Error("simctl timed out");
+    },
+    android: async () => {
+      events.push("android");
+    },
+    warn: (message) => {
+      events.push(message);
+    },
+  });
+  expect(events[0]).toBe("boot");
+  expect(events[1]).toContain("simctl timed out");
+  expect(events[2]).toBe("android");
+});

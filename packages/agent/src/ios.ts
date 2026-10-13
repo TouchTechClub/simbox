@@ -17,6 +17,26 @@ export function selectWarmSimulator(devices: Record<string, Simulator[]>): Simul
   return phones.find((device) => device.name === "iPhone 17e") ?? phones[0] ?? null;
 }
 
+/**
+ * Boot one iPhone so a fresh runner has a device to show. The device hub only
+ * lists simulators that have booted before, so without this S5 sees an empty
+ * inventory and has nothing to attach until a CLI command boots one.
+ */
+export async function bootDefaultSimulator(): Promise<void> {
+  const inventory = await run(["xcrun", "simctl", "list", "devices", "available", "-j"], {
+    timeoutMs: 120_000,
+  });
+  if (inventory.code !== 0) throw new Error("could not inspect iOS simulator inventory");
+  const device = selectWarmSimulator(
+    (JSON.parse(inventory.stdout) as { devices: Record<string, Simulator[]> }).devices,
+  );
+  if (!device) throw new Error("no available iPhone simulator on the runner");
+  if (device.state === "Booted") return;
+  const boot = await run(["xcrun", "simctl", "boot", device.udid], { timeoutMs: 120_000 });
+  if (boot.code !== 0) throw new Error(`could not start ${device.name}`);
+  info(`${device.name} booted for device previews`);
+}
+
 /** Optional iOS infrastructure warmup; never a prerequisite for Android startup. */
 export async function prepareIOS(agentDeviceBin: string): Promise<void> {
   const started = Date.now();

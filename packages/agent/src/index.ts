@@ -31,7 +31,7 @@ import { run } from "./proc.js";
 import { startGateway } from "./gateway.js";
 import { createPreviewHub } from "./preview-hub.js";
 import { healthyProxy, waitForProxy } from "./health.js";
-import { prepareIOS } from "./ios.js";
+import { bootDefaultSimulator, prepareIOS } from "./ios.js";
 import { preparePlatforms } from "./platforms.js";
 
 const TUNNEL_URL_TIMEOUT_MS = 60_000;
@@ -572,6 +572,7 @@ async function main(): Promise<void> {
   void preparePlatforms({
     warmIOS: process.platform === "darwin" && Bun.env.SIMBOX_WARM_IOS === "true",
     ios: () => prepareIOS(state.agentDeviceBin),
+    bootIOS: process.platform === "darwin" ? bootDefaultSimulator : undefined,
     android: () =>
       prepareAndroid(
         () => {

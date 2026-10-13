@@ -94,23 +94,26 @@ export function createPreviewHub(port = 4725) {
         retryAfter = Date.now() + 10_000;
       }
     });
+    // Any HTTP answer means the hub is serving. Device listings shell out to
+    // simctl, which takes far longer than this probe on a fresh runner; using
+    // one here killed healthy hubs in a loop.
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline && current.exitCode === null && !stopped) {
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/api/devices?booted=1`, {
+        const response = await fetch(`http://127.0.0.1:${port}/`, {
           signal: AbortSignal.timeout(1500),
         });
-        if (response.ok) {
-          await response.body?.cancel();
-          return port;
-        }
         await response.body?.cancel();
+        return port;
       } catch {
         /* starting */
       }
       await Bun.sleep(250);
     }
+    // Release the port before a retry can spawn the next hub.
     current.kill("SIGTERM");
+    await Promise.race([current.exited, Bun.sleep(3000)]);
+    if (current.exitCode === null) current.kill("SIGKILL");
     throw new Error("Device hub did not become ready");
   }
   return {

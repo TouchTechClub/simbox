@@ -107,7 +107,7 @@ Create a token (CF dashboard → My Profile → API Tokens → Create Custom Tok
 - Account › **Cloudflare Tunnel: Edit**
 - Zone › **Zone: Read** and **DNS: Edit**, limited to the `TUNNEL_ZONE` zone
 
-Save it as the `CLOUDFLARE_TUNNEL_API_TOKEN` secret and redeploy. Without it `/v1/runs/tunnel` returns 503 and runners keep using quick tunnels. The API deletes a run's tunnel and DNS record when the agent deregisters; a 10-minute cron also releases ended or expired runs and deletes `simbox-run-*` tunnels and `simbox run` DNS records with no live run.
+Save it as the `CLOUDFLARE_TUNNEL_API_TOKEN` secret and redeploy. Without that secret the deploy passes `CLOUDFLARE_API_TOKEN` instead (it currently carries these permissions too), so the worker then holds the deploy token; a dedicated token keeps the worker to tunnel and DNS access only. If neither token can provision, `/v1/runs/tunnel` fails and runners keep using quick tunnels. The API deletes a run's tunnel and DNS record when the agent deregisters; a 10-minute cron also releases ended or expired runs and deletes `simbox-run-*` tunnels and `simbox run` DNS records with no live run.
 
 To move zones, set the `TUNNEL_ZONE` variable and redeploy. S5 Code accepts `r-<16 hex>` under `runnerbox.dpdns.org` and `simbox.dpdns.org` (see S5's `SimboxDeviceHost.ts`).
 

@@ -136,7 +136,9 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_TUNNEL_API_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_API_TOKEN }}
+      # A dedicated tunnel-only token when set; otherwise the deploy token,
+      # which also carries Tunnel Edit + runnerbox.dpdns.org DNS Edit.
+      CLOUDFLARE_TUNNEL_API_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
       TUNNEL_ZONE: ${{ vars.TUNNEL_ZONE }}
       ALCHEMY_TELEMETRY_DISABLED: "1"
       # app env — secrets

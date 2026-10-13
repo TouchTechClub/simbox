@@ -25,7 +25,12 @@ import type { RepoRow, RunRow } from "../db";
 import { getLatestActiveRun, getRepoForUser, isTerminal } from "../db";
 import { apiError, newId, nowSeconds, toPublicRun, toRunSummary } from "../util";
 import { getRunnerSettings } from "../runners";
-import { provisionRunTunnel, releaseRunTunnel, tunnelsConfigured } from "../tunnels";
+import {
+  provisionRunTunnel,
+  releaseRunTunnel,
+  tunnelsConfigured,
+  tunnelZoneDelegated,
+} from "../tunnels";
 import {
   bindGhRunId,
   cancelWorkflowRun,
@@ -488,8 +493,8 @@ runRoutes.post("/v1/runs/tunnel", requireRunnerToken, async (c) => {
   const body = await c.req.json<RunTunnelRequest>().catch(() => null);
   if (!body || typeof body.ghRunId !== "number")
     return apiError(c, 400, "bad_request", "Expected {ghRunId}.");
-  if (!tunnelsConfigured(c.env))
-    return apiError(c, 503, "tunnels_unavailable", "Named tunnels are not configured.");
+  if (!tunnelsConfigured(c.env) || !(await tunnelZoneDelegated(c.env)))
+    return apiError(c, 503, "tunnels_unavailable", "Named tunnels are unavailable.");
   const run = await acceptRunnerRun(db, c.get("repo"), body.ghRunId);
   if (!run)
     return apiError(c, 403, "run_not_accepted", "No dispatched run matching this gh_run_id.");

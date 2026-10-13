@@ -22,6 +22,15 @@ function fakeCloudflare() {
     );
     const method = init?.method ?? "GET";
     const body = init?.body ? JSON.parse(init.body as string) : undefined;
+    if (url.hostname === "dns.google") {
+      const name = url.searchParams.get("name");
+      // runnerbox is delegated to Cloudflare; a lapsed zone gets no NS answer.
+      return Response.json(
+        name === "runnerbox.dpdns.org"
+          ? { Status: 0, Answer: [{ type: 2, data: "vin.ns.cloudflare.com." }] }
+          : { Status: 0, Authority: [{ type: 6, data: "ns1.dpdns.org." }] },
+      );
+    }
     const path = url.pathname.replace("/client/v4", "");
     if (path === "/zones") return ok([{ id: "zone-1", name: url.searchParams.get("name") }]);
     let m = path.match(/^\/accounts\/acct\/cfd_tunnel(?:\/([^/]+))?(?:\/(\w+))?$/);
@@ -141,6 +150,12 @@ test("runs get one named tunnel, foreign runs get none, and ended or orphaned tu
 
     // Unconfigured deployments answer promptly so the agent uses a quick tunnel.
     expect((await post("/v1/runs/tunnel", { ghRunId: 77 }, base)).status).toBe(503);
+    // A zone its parent no longer delegates would hand out unresolvable URLs.
+    expect(
+      (await post("/v1/runs/tunnel", { ghRunId: 77 }, { ...env, TUNNEL_ZONE: "lapsed.dpdns.org" }))
+        .status,
+    ).toBe(503);
+    expect(cloudflare.tunnels.size).toBe(0);
     expect((await post("/v1/runs/tunnel", { ghRunId: 999 })).status).toBe(403);
 
     const first = await post("/v1/runs/tunnel", { ghRunId: 77 });

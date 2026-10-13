@@ -46,6 +46,37 @@ export function tunnelsConfigured(env: TunnelEnv): boolean {
   return !!(env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_TUNNEL_API_TOKEN && tunnelZone(env));
 }
 
+/**
+ * Whether the public internet resolves the tunnel zone through Cloudflare.
+ * Cloudflare keeps reporting a zone as active after its parent stops
+ * delegating to it (a lapsed free subdomain), and cloudflared still connects,
+ * so without this check every runner would register a URL nobody can resolve.
+ */
+export async function tunnelZoneDelegated(env: TunnelEnv): Promise<boolean> {
+  const zone = tunnelZone(env);
+  const key = `cf_zone_delegated:${zone}`;
+  const cached = await env.KV.get(key);
+  if (cached) return cached === "1";
+  let delegated = false;
+  try {
+    const res = await fetch(`https://dns.google/resolve?name=${encodeURIComponent(zone)}&type=NS`, {
+      headers: { accept: "application/dns-json" },
+      signal: AbortSignal.timeout(5_000),
+    });
+    const json = (await res.json()) as {
+      Status?: number;
+      Answer?: Array<{ type: number; data: string }>;
+    };
+    delegated =
+      json.Status === 0 &&
+      (json.Answer ?? []).some((a) => a.type === 2 && /\.ns\.cloudflare\.com\.?$/i.test(a.data));
+  } catch {
+    // Unknown is treated as undelegated: a quick tunnel always works.
+  }
+  await env.KV.put(key, delegated ? "1" : "0", { expirationTtl: delegated ? 3_600 : 300 });
+  return delegated;
+}
+
 function tunnelZone(env: TunnelEnv): string {
   return (env.TUNNEL_ZONE ?? "").trim().toLowerCase();
 }

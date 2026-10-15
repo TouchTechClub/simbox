@@ -3,6 +3,8 @@
  * Contracts come from @simbox/shared.
  */
 import type {
+  RunConfigRequest,
+  RunConfigResponse,
   RunDeregisterRequest,
   RunHeartbeatRequest,
   RunRegisterRequest,
@@ -53,6 +55,11 @@ export class ApiClient {
     if (!named?.tunnelUrl?.startsWith("https://") || !named.connectorToken)
       throw new Error("malformed tunnel response");
     return named;
+  }
+
+  async config(body: RunConfigRequest): Promise<RunConfigResponse> {
+    const res = await this.post("/v1/runs/config", body, 15_000);
+    return (await res.json()) as RunConfigResponse;
   }
 
   register(body: RunRegisterRequest): Promise<Response> {

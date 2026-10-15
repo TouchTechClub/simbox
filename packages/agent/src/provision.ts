@@ -138,6 +138,16 @@ export function androidSystemImage(arch: string): string {
   return PINS.androidSystemImage.replace("arm64-v8a", arch === "arm64" ? "arm64-v8a" : "x86_64");
 }
 
+/**
+ * avdmanager hardware profile. Hosted cmdline-tools lack Android Studio's
+ * `pixel_fold`, so foldables fall back to the generic 7.6in Foldable, which
+ * has the same hinge and cover/inner displays.
+ */
+export function androidHardwareProfile(foldable: boolean, available: string[]): string {
+  if (!foldable) return "pixel_6";
+  return ["pixel_fold", "7.6in Foldable"].find((id) => available.includes(id)) ?? "7.6in Foldable";
+}
+
 export function androidDirectories(env: Record<string, string | undefined>) {
   const userHome = env.ANDROID_USER_HOME || join(env.HOME || homedir(), ".android");
   return { userHome, avdHome: env.ANDROID_AVD_HOME || join(userHome, "avd") };
@@ -157,6 +167,7 @@ export async function configureAndroidEnvironment(): Promise<void> {
  * non-fatal: it only leaves `androidReady` false in heartbeats.
  */
 export async function prepareAndroid(
+  profile: { foldable: boolean },
   setReady: () => void,
   onEmulator: (proc: ChildProc) => void,
 ): Promise<void> {
@@ -214,6 +225,15 @@ export async function prepareAndroid(
       return;
     }
 
+    const hardware = androidHardwareProfile(
+      profile.foldable,
+      profile.foldable
+        ? (await run([avdmanager, "list", "device", "-c"], { timeoutMs: 60_000 })).stdout
+            .split("\n")
+            .map((line) => line.trim())
+        : [],
+    );
+    info(`Android hardware profile: ${hardware}`);
     // "no" answers the "custom hardware profile?" prompt.
     const avdHome = Bun.env.ANDROID_AVD_HOME!;
     const avdPath = join(avdHome, "simbox.avd");
@@ -229,7 +249,7 @@ export async function prepareAndroid(
         "-k",
         systemImage,
         "-d",
-        "pixel_6",
+        hardware,
         "--force",
       ],
       { input: "no\n", timeoutMs: 60_000 },

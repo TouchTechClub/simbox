@@ -144,6 +144,8 @@ test("runs get one named tunnel, foreign runs get none, and ended or orphaned tu
       repo_full_name: "owner/test",
       gh_run_id: 77,
       state: "booting",
+      platform: "ios",
+      device: { foldable: true, xcode: "27.1" },
       created_at: now,
       expires_at: now + 3600,
     });
@@ -157,6 +159,13 @@ test("runs get one named tunnel, foreign runs get none, and ended or orphaned tu
     ).toBe(503);
     expect(cloudflare.tunnels.size).toBe(0);
     expect((await post("/v1/runs/tunnel", { ghRunId: 999 })).status).toBe(403);
+
+    // The runner learns which device to prepare from its own run only.
+    expect(await (await post("/v1/runs/config", { ghRunId: 77 })).json()).toEqual({
+      platform: "ios",
+      device: { foldable: true, xcode: "27.1" },
+    });
+    expect((await post("/v1/runs/config", { ghRunId: 999 })).status).toBe(403);
 
     const first = await post("/v1/runs/tunnel", { ghRunId: 77 });
     expect(first.status).toBe(200);

@@ -46,9 +46,21 @@ program
     "--runner <label-or-json>",
     "override runner label or JSON label array; requires --platform",
   )
+  .option(
+    "--foldable",
+    "boot a foldable: iPhone Duo (needs Xcode 27.1+, e.g. --runner xcode-27) or a 7.6in Android foldable; requires --platform",
+  )
+  .option("--xcode <version>", "iOS: select this Xcode (e.g. 27.1) before the device daemon starts")
   .option("--json", "print {tunnel_url, daemon_token, run_id, expires_at} as JSON only")
   .action(
-    (opts: { new?: boolean; json?: boolean; platform?: "ios" | "android"; runner?: string }) => {
+    (opts: {
+      new?: boolean;
+      json?: boolean;
+      platform?: "ios" | "android";
+      runner?: string;
+      foldable?: boolean;
+      xcode?: string;
+    }) => {
       requireToken();
       return run(cmdSim(opts));
     },

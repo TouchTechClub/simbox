@@ -21,6 +21,8 @@ export interface RunOptions {
   timeoutMs?: number;
   /** Cancel optional setup work during runner shutdown. */
   signal?: AbortSignal;
+  /** Variables added to the inherited environment for this command only. */
+  env?: Record<string, string>;
 }
 
 /** Run a command to completion, capturing output. Never throws on non-zero exit. */
@@ -30,7 +32,7 @@ export async function run(cmd: string[], opts: RunOptions = {}): Promise<RunResu
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...Bun.env },
+    env: { ...Bun.env, ...opts.env },
   });
   const stdin = proc.stdin;
   if (stdin && typeof stdin === "object" && "write" in stdin) {

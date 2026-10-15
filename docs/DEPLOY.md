@@ -126,7 +126,7 @@ Use `simbox exec <agent-device command>` for device operations. It injects the
 per-run daemon token, resolves the latest tunnel on each command, and uses a
 stable run-scoped session in Simbox's own state directory (without modifying
 agent-device global/proxy profiles). Cold startup gets a 300000 ms budget.
-Clients should use `agent-device@0.21.20`, matching the runner pin. Existing
+Clients should use `agent-device@0.21.28`, matching the runner pin. Existing
 runs keep the old agent until stopped/recreated after a release.
 
 Android testing uses `simbox sim --platform android --new`: the repaired workflow

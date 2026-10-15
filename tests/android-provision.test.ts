@@ -2,10 +2,14 @@ import { expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { prepareAndroid, configureAndroidEnvironment } from "../packages/agent/src/provision.js";
+import {
+  androidHardwareProfile,
+  prepareAndroid,
+  configureAndroidEnvironment,
+} from "../packages/agent/src/provision.js";
 import type { ChildProc } from "../packages/agent/src/proc.js";
 
-test("provisioning owns the AVD registry and only marks ready after a booted emulator", async () => {
+async function provision(foldable: boolean): Promise<string[]> {
   const dir = await mkdtemp(join(tmpdir(), "simbox-android-test-"));
   const keys = [
     "ANDROID_HOME",
@@ -24,9 +28,12 @@ test("provisioning owns the AVD registry and only marks ready after a booted emu
       "cmdline-tools/latest/bin/sdkmanager": "process.exit(0);",
       "cmdline-tools/latest/bin/avdmanager": `
         const fs = require('node:fs'); const args = process.argv.slice(2);
+        if (args[0] === 'list') { console.log('pixel_6\\n7.6in Foldable\\n8in Foldable'); process.exit(0); }
         const path = args[args.indexOf('--path') + 1];
         if (!process.env.ANDROID_AVD_HOME || !path.endsWith('simbox.avd')) process.exit(1);
-        fs.mkdirSync(path, { recursive: true }); fs.writeFileSync(path + '/config.ini', 'AvdId=simbox\\n');
+        fs.mkdirSync(path, { recursive: true });
+        fs.writeFileSync(path + '/config.ini', 'AvdId=simbox\\n');
+        fs.writeFileSync(process.env.ANDROID_AVD_HOME + '/avdmanager-args', JSON.stringify(args));
       `,
       "emulator/emulator": `
         if (process.argv.includes('-accel-check')) process.exit(0);
@@ -46,6 +53,7 @@ test("provisioning owns the AVD registry and only marks ready after a booted emu
     await configureAndroidEnvironment();
     let ready = false;
     await prepareAndroid(
+      { foldable },
       () => {
         ready = true;
       },
@@ -58,6 +66,7 @@ test("provisioning owns the AVD registry and only marks ready after a booted emu
     expect(await Bun.file(join(dir, "avds/simbox.ini")).text()).toContain(
       `path=${dir}/avds/simbox.avd`,
     );
+    return JSON.parse(await Bun.file(join(dir, "avds/avdmanager-args")).text()) as string[];
   } finally {
     if (child) {
       child.kill();
@@ -69,4 +78,20 @@ test("provisioning owns the AVD registry and only marks ready after a booted emu
     }
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+test("provisioning owns the AVD registry and only marks ready after a booted emulator", async () => {
+  const args = await provision(false);
+  expect(args[args.indexOf("-d") + 1]).toBe("pixel_6");
 }, 10_000);
+
+test("a foldable run creates the AVD from a foldable hardware profile", async () => {
+  const args = await provision(true);
+  expect(args[args.indexOf("-d") + 1]).toBe("7.6in Foldable");
+}, 10_000);
+
+test("foldables prefer pixel_fold when the SDK ships it", () => {
+  expect(androidHardwareProfile(true, ["pixel_fold", "7.6in Foldable"])).toBe("pixel_fold");
+  expect(androidHardwareProfile(true, ["7.6in Foldable"])).toBe("7.6in Foldable");
+  expect(androidHardwareProfile(false, ["pixel_fold"])).toBe("pixel_6");
+});

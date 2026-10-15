@@ -13,7 +13,7 @@ import {
   PROD_API_URL,
   PROXY_PORT,
 } from "@simbox/shared";
-import type { RunRegisterRequest, RunTunnelResponse } from "@simbox/shared";
+import type { DeviceProfile, RunRegisterRequest, RunTunnelResponse } from "@simbox/shared";
 import { PINS } from "./pins.js";
 import pkg from "../package.json" with { type: "json" };
 import { addMask, error, info, warn } from "./log.js";
@@ -33,6 +33,7 @@ import { startGateway } from "./gateway.js";
 import { createPreviewHub } from "./preview-hub.js";
 import { healthyProxy, waitForProxy } from "./health.js";
 import { bootDefaultSimulator, prepareIOS } from "./ios.js";
+import { ensureFoldableSimulator, selectXcode } from "./xcode.js";
 import { preparePlatforms } from "./platforms.js";
 
 const TUNNEL_URL_TIMEOUT_MS = 60_000;
@@ -67,6 +68,10 @@ const state = {
   tunnelUrl: "",
   /** Named tunnel for this run; null → quick tunnel (older API, or provisioning failed). */
   named: null as RunTunnelResponse | null,
+  /** Device requested for this run beyond the platform defaults. */
+  device: null as DeviceProfile | null,
+  /** The iPhone Duo booted instead of the default simulator on foldable runs. */
+  foldableUdid: undefined as string | undefined,
   agentDeviceBin: "",
   cloudflaredBin: "",
   androidReady: false,
@@ -256,6 +261,25 @@ function isRetriable(err: unknown): boolean {
     return true; // 5xx retriable
   }
   return true; // network errors retriable
+}
+
+/** The run's requested device; defaults when the API is older or unreachable. */
+async function requestRunConfig(): Promise<DeviceProfile | null> {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const config = await api().config({ ghRunId: state.ghRunId });
+      return config.device ?? null;
+    } catch (err) {
+      if (err instanceof HttpError && err.status < 500) {
+        info(`run config unavailable (HTTP ${err.status}); preparing default devices`);
+        return null;
+      }
+      warn(`run config request failed: ${String(err).slice(0, 200)}`);
+      if (attempt < 3) await Bun.sleep(2000);
+    }
+  }
+  warn("could not read the run config; preparing default devices");
+  return null;
 }
 
 /** Ask the API for a named tunnel; any failure means a quick tunnel instead. */
@@ -611,6 +635,22 @@ async function main(): Promise<void> {
     `simbox-agent v${pkg.version} — run ${state.ghRunId} (attempt ${state.ghRunAttempt}), api ${state.apiUrl}`,
   );
 
+  state.device = await requestRunConfig();
+  if (state.device) info(`device requested: ${JSON.stringify(state.device)}`);
+  // agent-device resolves its toolchain once, so the Xcode switch has to land
+  // before its daemon starts. A requested device the runner cannot provide
+  // fails the run rather than silently serving the default phone.
+  if (process.platform === "darwin" && (state.device?.xcode || state.device?.foldable)) {
+    const foldable = state.device.foldable === true;
+    try {
+      await selectXcode({ version: state.device.xcode, foldable });
+      if (foldable) state.foldableUdid = await ensureFoldableSimulator();
+    } catch (err) {
+      error(String(err).slice(0, 500));
+      await shutdown(String(err instanceof Error ? err.message : err).slice(0, 200), 1);
+    }
+  }
+
   // 2. Provision: agent-device + cloudflared in parallel; Android prep runs
   // fully in the background and must never block iOS bring-up (it handles all
   // its own errors internally).
@@ -653,10 +693,12 @@ async function main(): Promise<void> {
   // explicitly opt-in, and even its failure cannot skip Android provisioning.
   void preparePlatforms({
     warmIOS: process.platform === "darwin" && Bun.env.SIMBOX_WARM_IOS === "true",
-    ios: () => prepareIOS(state.agentDeviceBin),
-    bootIOS: process.platform === "darwin" ? bootDefaultSimulator : undefined,
+    ios: () => prepareIOS(state.agentDeviceBin, state.foldableUdid),
+    bootIOS:
+      process.platform === "darwin" ? () => bootDefaultSimulator(state.foldableUdid) : undefined,
     android: () =>
       prepareAndroid(
+        { foldable: state.device?.foldable === true },
         () => {
           state.androidReady = true;
         },

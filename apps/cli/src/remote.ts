@@ -141,7 +141,7 @@ export async function cmdExec(args: string[]): Promise<void> {
     throw new CliError("Use device commands with `simbox exec`, not connection/auth commands.");
   }
   const bin = findAgentDevice();
-  if (!bin) throw new CliError("Install agent-device first: npm i -g agent-device@0.21.20");
+  if (!bin) throw new CliError("Install agent-device first: npm i -g agent-device@0.21.28");
   const android = args.some(
     (arg, i) => arg === "--platform=android" || (arg === "--platform" && args[i + 1] === "android"),
   );

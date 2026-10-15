@@ -65,6 +65,30 @@ Manual Actions dispatch can leave `runner_labels` empty to use the platform defa
 `simbox doctor` checks local tools, configuration and the installed workflow
 without starting a paid job; actual KVM/Xcode capability is checked on the runner.
 
+## Foldables
+
+`--foldable` prepares a foldable device instead of the default phone; `--xcode`
+selects an installed Xcode before the device daemon starts. Both require
+`--platform` and are fixed for the life of a run, so changing them needs `--new`.
+
+```bash
+simbox sim --new --platform ios --runner xcode-27 --xcode 27.1 --foldable
+simbox sim --new --platform android --foldable
+simbox exec fold closed      # or half-open / open
+```
+
+- **iOS** creates an iPhone Duo in the default simulator set (agent-device's
+  `fold` refuses custom sets). It needs Xcode 27.1 or later; GitHub's
+  `xcode-27` image is a preview and can queue slowly. That image ships only the
+  iOS 27.0 simulator runtime, so the runner downloads the 27.1 runtime first,
+  which adds several minutes to startup. Without `--xcode`, the newest
+  installed Xcode that has the iPhone Duo is used.
+- **Android** boots the SDK's generic 7.6in Foldable (1768x2208 with a hinge
+  sensor and closed, half-open and open postures). The hosted command-line
+  tools have no `pixel_fold` profile; Simbox uses it when the SDK provides one.
+- `fold` needs agent-device 0.21.28 or later on the client and an open session.
+  It reads the hinge angle back after each pose.
+
 ## Small agent skill
 
 The skill lives at `skills/simbox/SKILL.md`. It covers setup, runner selection,

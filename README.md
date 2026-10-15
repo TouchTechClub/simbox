@@ -14,7 +14,7 @@ Free on-demand iOS simulators & Android emulators running on your own GitHub Act
 ## Use
 
 ```bash
-npm i -g @touchtechclub/simbox agent-device@0.21.20
+npm i -g @touchtechclub/simbox agent-device@0.21.28
 simbox login
 simbox init
 simbox sim
@@ -76,6 +76,7 @@ simbox runners set ios macos-latest --scope repo
 simbox runners show
 simbox doctor
 simbox sim --new --platform android --runner ubuntu-latest
+simbox sim --new --platform ios --runner xcode-27 --xcode 27.1 --foldable
 simbox skills install  # asks current project vs global, then agent selection
 ```
 

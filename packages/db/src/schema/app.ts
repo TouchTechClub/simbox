@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
-import type { RepoState, RunState, RunnerTarget } from "@simbox/shared";
+import type { DeviceProfile, RepoState, RunState, RunnerTarget } from "@simbox/shared";
 import { user } from "./auth";
 
 /**
@@ -57,6 +57,8 @@ export const runs = sqliteTable(
     state: text("state").$type<RunState>().notNull().default("dispatching"),
     platform: text("platform").$type<"ios" | "android">().notNull().default("ios"),
     runner: text("runner", { mode: "json" }).$type<RunnerTarget>(),
+    // Device beyond the platform default (foldable, Xcode); null for defaults.
+    device: text("device", { mode: "json" }).$type<DeviceProfile>(),
     tunnel_url: text("tunnel_url"),
     daemon_token: text("daemon_token"),
     // Named Cloudflare tunnel provisioned for this run; null for quick tunnels

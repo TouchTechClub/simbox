@@ -4,7 +4,7 @@
  */
 export const PINS = {
   /** npm package `agent-device` — installed via `npm i -g agent-device@<pin>`. */
-  agentDevice: "0.21.20",
+  agentDevice: "0.21.28",
   /** Same screen-streaming backend as T3 Code's device panel. */
   deviceHub: "0.12.0",
   /** cloudflared GitHub release tag — https://github.com/cloudflare/cloudflared/releases */

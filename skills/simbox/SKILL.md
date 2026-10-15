@@ -36,6 +36,11 @@ Blacksmith needs its GitHub App and bills separately; do not silently select a
 paid runner. A workflow-input error requires `simbox repair` (rotates the repo
 secret), and possibly merging its PR; ask before repairing an active run.
 
+For hinge testing, start with `--foldable` (iOS also needs
+`--runner xcode-27 --xcode 27.1`; startup takes several extra minutes), open
+an app, then `simbox exec fold closed|half-open|open`. A run's device is fixed;
+changing it requires `--new`.
+
 The dashboard's Devices panel shows live video. Viewing is read-only unless a
 human enables browser control; coordinate before mixing browser and CLI inputs.
 Viewing alone does not keep an idle runner alive.

@@ -2,6 +2,7 @@ import { PROD_API_URL } from "@simbox/shared/constants";
 import type { PublicRun, Repo, RepoStatusResponse, RunSummary, User } from "@simbox/shared/types";
 import type { RunnerSettings, RunnerPreferences, RunnerTarget } from "@simbox/shared/runners";
 import type { PreviewInventory, PreviewAccess } from "@simbox/shared/preview";
+import type { DeviceProfile } from "@simbox/shared/device-profile";
 
 /**
  * API base URL. Same-origin is NOT assumed in prod: the API lives on
@@ -165,6 +166,7 @@ function normalizeRun(raw: unknown): PublicRun | null {
     state: str(r.state) as PublicRun["state"],
     platform: r.platform === "android" ? "android" : "ios",
     runner: (r.runner ?? null) as RunnerTarget | null,
+    device: (r.device ?? null) as DeviceProfile | null,
     tunnelUrl: (r.tunnelUrl ?? r.tunnel_url ?? null) as string | null,
     daemonToken: (r.daemonToken ?? r.daemon_token ?? null) as string | null,
     activeDevices: num(r.activeDevices ?? r.active_devices),
@@ -183,6 +185,7 @@ function normalizeRunSummary(raw: unknown): RunSummary {
     state: str(r.state) as RunSummary["state"],
     platform: r.platform === "android" ? "android" : "ios",
     runner: (r.runner ?? null) as RunnerTarget | null,
+    device: (r.device ?? null) as DeviceProfile | null,
     activeDevices: num(r.activeDevices ?? r.active_devices),
     createdAt: num(r.createdAt ?? r.created_at),
     endedAt: (r.endedAt ?? r.ended_at ?? null) as number | null,

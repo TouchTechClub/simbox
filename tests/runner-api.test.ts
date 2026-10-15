@@ -200,20 +200,41 @@ test("authenticated runner settings, dispatch, history and repair preserve owner
         })
       ).status,
     ).toBe(400);
+    expect((await request("/v1/runs/ensure", { device: { foldable: true } })).status).toBe(400);
+    expect(
+      (await request("/v1/runs/ensure", { platform: "android", device: { foldable: true } })).body
+        .error,
+    ).toBe("device_mismatch");
+    expect((await request("/v1/runs/ensure", { platform: "android", device: {} })).body.runId).toBe(
+      started.body.runId,
+    ); // an empty profile is the default device
+    for (const device of [{ xcode: "27.1" }, { foldable: "yes" }, { hinge: true }])
+      expect(
+        (await request("/v1/runs/ensure", { new: true, platform: "android", device })).body.error,
+      ).toBe("invalid_device");
     expect((await request("/v1/runs/current")).body.run.state).toBe("live"); // invalid input never cancels
     const next = await request("/v1/runs/ensure", {
       new: true,
       platform: "android",
       runner: { labels: ["ubuntu-latest"] },
+      device: { foldable: true },
     });
     expect(next.status).toBe(200);
+    expect(dispatches[1].inputs).toEqual({
+      platform: "android",
+      runner_labels: '["ubuntu-latest"]',
+    }); // the runner reads the device from /v1/runs/config, not workflow inputs
     expect(dispatches[1].inputs.runner_labels).toBe('["ubuntu-latest"]');
     row = (await db.select().from(schema.runs)).find((run) => run.id === next.body.runId);
     expect(row?.runner).toEqual({ labels: ["ubuntu-latest"] });
+    expect(row?.device).toEqual({ foldable: true });
     const history = await request("/v1/runs");
     expect(history.body.runs.find((run: any) => run.id === started.body.runId).runner).toEqual(
       repository,
     );
+    expect(history.body.runs.find((run: any) => run.id === next.body.runId).device).toEqual({
+      foldable: true,
+    });
     expect((await request("/v1/runs/current", undefined, "user-b")).body.run).toBeNull();
 
     await request("/v1/repo/disconnect", {});

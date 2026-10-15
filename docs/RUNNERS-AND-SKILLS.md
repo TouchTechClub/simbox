@@ -86,8 +86,13 @@ simbox exec fold closed      # or half-open / open
 - **Android** boots the SDK's generic 7.6in Foldable (1768x2208 with a hinge
   sensor and closed, half-open and open postures). The hosted command-line
   tools have no `pixel_fold` profile; Simbox uses it when the SDK provides one.
+  Folding commits the device state apps observe (Jetpack WindowManager posture
+  and hinge angle), but this profile has no separate cover display, so
+  screenshots stay 1768x2208 in every pose.
 - `fold` needs agent-device 0.21.28 or later on the client and an open session.
-  It reads the hinge angle back after each pose.
+  It reads the hinge angle back after each pose. On the busy xcode-27 image
+  devicectl sometimes answers "no display table" or times out; setting a pose
+  is idempotent, so retry it.
 
 ## Small agent skill
 

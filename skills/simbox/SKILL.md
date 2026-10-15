@@ -38,7 +38,8 @@ secret), and possibly merging its PR; ask before repairing an active run.
 
 For hinge testing, start with `--foldable` (iOS also needs
 `--runner xcode-27 --xcode 27.1`; startup takes several extra minutes), open
-an app, then `simbox exec fold closed|half-open|open`. A run's device is fixed;
+an app, then `simbox exec fold closed|half-open|open` (idempotent: retry a
+failed pose). A run's device is fixed;
 changing it requires `--new`.
 
 The dashboard's Devices panel shows live video. Viewing is read-only unless a

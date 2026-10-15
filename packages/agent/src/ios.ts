@@ -8,7 +8,16 @@ interface Simulator {
   isAvailable?: boolean;
 }
 
-export function selectWarmSimulator(devices: Record<string, Simulator[]>): Simulator | null {
+export function selectWarmSimulator(
+  devices: Record<string, Simulator[]>,
+  preferredUdid?: string,
+): Simulator | null {
+  if (preferredUdid)
+    return (
+      Object.values(devices)
+        .flat()
+        .find((device) => device.udid === preferredUdid) ?? null
+    );
   const phones = Object.values(devices)
     .flat()
     .filter(
@@ -22,13 +31,14 @@ export function selectWarmSimulator(devices: Record<string, Simulator[]>): Simul
  * lists simulators that have booted before, so without this S5 sees an empty
  * inventory and has nothing to attach until a CLI command boots one.
  */
-export async function bootDefaultSimulator(): Promise<void> {
+export async function bootDefaultSimulator(preferredUdid?: string): Promise<void> {
   const inventory = await run(["xcrun", "simctl", "list", "devices", "available", "-j"], {
     timeoutMs: 120_000,
   });
   if (inventory.code !== 0) throw new Error("could not inspect iOS simulator inventory");
   const device = selectWarmSimulator(
     (JSON.parse(inventory.stdout) as { devices: Record<string, Simulator[]> }).devices,
+    preferredUdid,
   );
   if (!device) throw new Error("no available iPhone simulator on the runner");
   if (device.state === "Booted") return;
@@ -38,7 +48,7 @@ export async function bootDefaultSimulator(): Promise<void> {
 }
 
 /** Optional iOS infrastructure warmup; never a prerequisite for Android startup. */
-export async function prepareIOS(agentDeviceBin: string): Promise<void> {
+export async function prepareIOS(agentDeviceBin: string, preferredUdid?: string): Promise<void> {
   const started = Date.now();
   const deadline = started + 10 * 60_000;
   const inventory = await run(["xcrun", "simctl", "list", "devices", "available", "-j"], {
@@ -50,6 +60,7 @@ export async function prepareIOS(agentDeviceBin: string): Promise<void> {
     );
   const device = selectWarmSimulator(
     (JSON.parse(inventory.stdout) as { devices: Record<string, Simulator[]> }).devices,
+    preferredUdid,
   );
   if (!device) throw new Error("no available iPhone simulator on the runner");
   info(`preparing ${device.name} before exposing the tunnel`);

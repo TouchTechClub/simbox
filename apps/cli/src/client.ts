@@ -7,6 +7,7 @@ import type {
   User,
   RunnerSettings,
   RunnerPreferences,
+  DeviceProfile,
   RunnerTarget,
   RunnerDiagnostics,
 } from "@simbox/shared";
@@ -163,10 +164,15 @@ export const repairRepo = () =>
     method: "POST",
   });
 
-export const ensureRun = (fresh: boolean, platform?: "ios" | "android", runner?: RunnerTarget) =>
+export const ensureRun = (
+  fresh: boolean,
+  platform?: "ios" | "android",
+  runner?: RunnerTarget,
+  device?: DeviceProfile,
+) =>
   api<EnsureRunResponse>("/v1/runs/ensure", {
     method: "POST",
-    body: { new: fresh, platform, runner },
+    body: { new: fresh, platform, runner, device },
   });
 
 export const runnerSettings = () => api<RunnerSettings>("/v1/runners");

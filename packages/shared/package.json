@@ -7,7 +7,8 @@
     "./types": "./src/types.ts",
     "./constants": "./src/constants.ts",
     "./runners": "./src/runners.ts",
-    "./preview": "./src/preview.ts"
+    "./preview": "./src/preview.ts",
+    "./device-profile": "./src/device-profile.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

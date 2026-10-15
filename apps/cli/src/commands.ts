@@ -2,7 +2,12 @@ import { rmSync } from "node:fs";
 import { clearCachedRun, writeCachedRun } from "./run-cache.js";
 import pc from "picocolors";
 import type { PublicRun, RepoStatusResponse } from "@simbox/shared";
-import { parseRunnerInput, formatRunner } from "@simbox/shared";
+import {
+  parseRunnerInput,
+  formatRunner,
+  formatDeviceProfile,
+  validateDeviceProfile,
+} from "@simbox/shared";
 import {
   CliError,
   currentRun,
@@ -150,6 +155,8 @@ export async function cmdSim(opts: {
   json?: boolean;
   platform?: "ios" | "android";
   runner?: string;
+  foldable?: boolean;
+  xcode?: string;
 }): Promise<void> {
   const json = opts.json === true;
   const out = json ? process.stderr : process.stdout;
@@ -158,7 +165,19 @@ export async function cmdSim(opts: {
     throw new CliError("Use --platform ios or android with --runner.");
   const runner =
     opts.runner === undefined ? undefined : parseRunnerInput(opts.runner, opts.platform!);
-  const first = await ensureRun(opts.new === true, opts.platform, runner);
+  const wantsDevice = opts.foldable === true || opts.xcode !== undefined;
+  if (wantsDevice && !opts.platform)
+    throw new CliError("Use --platform ios or android with --foldable or --xcode.");
+  let device;
+  try {
+    device = wantsDevice
+      ? (validateDeviceProfile({ foldable: opts.foldable, xcode: opts.xcode }, opts.platform!) ??
+        undefined)
+      : undefined;
+  } catch (err) {
+    throw new CliError((err as Error).message);
+  }
+  const first = await ensureRun(opts.new === true, opts.platform, runner, device);
 
   let info: ConnectInfo;
   if (first.state === "live") {
@@ -253,6 +272,7 @@ export async function cmdPs(): Promise<void> {
   console.log(`  state:          ${stateColor(run.state)}`);
   console.log(`  platform:       ${run.platform}`);
   console.log(`  runner:         ${formatRunner(run.runner)}`);
+  console.log(`  device:         ${formatDeviceProfile(run.device ?? null, run.platform)}`);
   console.log(`  gh_run_id:      ${run.ghRunId ?? pc.dim("pending")}`);
   console.log(`  active_devices: ${run.activeDevices}`);
   console.log(`  android_ready:  ${run.androidReady ? "yes" : "no"}`);

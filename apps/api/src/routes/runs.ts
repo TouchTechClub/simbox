@@ -5,6 +5,8 @@ import type { Database } from "@simbox/db";
 import type {
   EnsureRunRequest,
   EnsureRunResponse,
+  RunConfigRequest,
+  RunConfigResponse,
   RunHeartbeatRequest,
   RunRegisterRequest,
   RunState,
@@ -15,6 +17,9 @@ import {
   HARD_EXIT_MINUTES,
   MAX_DEVICES_PER_RUN,
   resolveRunner,
+  formatDeviceProfile,
+  sameDeviceProfile,
+  validateDeviceProfile,
   validateRunner,
   sameRunner,
 } from "@simbox/shared";
@@ -192,6 +197,14 @@ runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
   } catch (err) {
     return apiError(c, 400, "invalid_runner", (err as Error).message);
   }
+  if (body.device !== undefined && !body.platform)
+    return apiError(c, 400, "invalid_device", "Specify platform when choosing a device.");
+  let device;
+  try {
+    device = validateDeviceProfile(body.device, platform);
+  } catch (err) {
+    return apiError(c, 400, "invalid_device", (err as Error).message);
+  }
 
   const repo = await getRepoForUser(db, user.id);
   if (!repo) return apiError(c, 404, "no_repo", "Connect a repo first (dashboard onboarding).");
@@ -225,6 +238,14 @@ runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
           409,
           "runner_mismatch",
           "The active run uses a different runner. Use `simbox sim --new --platform <platform> --runner <label>` to replace it.",
+        );
+      }
+      if (body.device !== undefined && !sameDeviceProfile(active.device ?? null, device)) {
+        return apiError(
+          c,
+          409,
+          "device_mismatch",
+          `The active run has a different device (${formatDeviceProfile(active.device ?? null, active.platform)}). Add --new to replace it.`,
         );
       }
       if (active.state === "live") {
@@ -327,6 +348,7 @@ runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
       state: ghRunId ? "queued" : "dispatching",
       platform,
       runner,
+      device,
       created_at: now,
       dispatched_at: now,
       expires_at: now + HARD_EXIT_MINUTES * 60,
@@ -505,6 +527,20 @@ runRoutes.post("/v1/runs/tunnel", requireRunnerToken, async (c) => {
     console.error("tunnel provisioning failed", run.id, String(error));
     return apiError(c, 502, "tunnel_failed", "Could not provision a named tunnel.");
   }
+});
+
+// POST /v1/runs/config — what the runner should prepare. Older runs and
+// default requests answer device null, which keeps the platform defaults.
+runRoutes.post("/v1/runs/config", requireRunnerToken, async (c) => {
+  const db = createDb(c.env);
+  const body = await c.req.json<RunConfigRequest>().catch(() => null);
+  if (!body || typeof body.ghRunId !== "number")
+    return apiError(c, 400, "bad_request", "Expected {ghRunId}.");
+  const run = await acceptRunnerRun(db, c.get("repo"), body.ghRunId);
+  if (!run)
+    return apiError(c, 403, "run_not_accepted", "No dispatched run matching this gh_run_id.");
+  const config: RunConfigResponse = { platform: run.platform, device: run.device ?? null };
+  return c.json(config);
 });
 
 // POST /v1/runs/register — agent announces its tunnel.

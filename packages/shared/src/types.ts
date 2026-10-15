@@ -1,3 +1,4 @@
+import type { DeviceProfile } from "./device-profile.js";
 import type { RunnerTarget } from "./runners.js";
 
 /** Run lifecycle states (D1 `runs.state`). */
@@ -43,6 +44,7 @@ export interface PublicRun {
   state: RunState;
   platform: "ios" | "android";
   runner: RunnerTarget | null;
+  device: DeviceProfile | null;
   tunnelUrl: string | null;
   daemonToken: string | null;
   activeDevices: number;
@@ -59,6 +61,7 @@ export interface RunSummary {
   state: RunState;
   platform: "ios" | "android";
   runner: RunnerTarget | null;
+  device: DeviceProfile | null;
   activeDevices: number;
   createdAt: number;
   endedAt: number | null;
@@ -71,6 +74,7 @@ export interface EnsureRunRequest {
   new?: boolean;
   platform?: "ios" | "android";
   runner?: RunnerTarget;
+  device?: DeviceProfile;
 }
 
 export type EnsureRunResponse =
@@ -106,6 +110,16 @@ export interface RunRegisterRequest {
 
 export interface RunTunnelRequest {
   ghRunId: number;
+}
+
+export interface RunConfigRequest {
+  ghRunId: number;
+}
+
+/** What the runner should prepare, as requested when the run was dispatched. */
+export interface RunConfigResponse {
+  platform: "ios" | "android";
+  device: DeviceProfile | null;
 }
 
 /** A named Cloudflare tunnel for one run: stable URL, several edge connections. */

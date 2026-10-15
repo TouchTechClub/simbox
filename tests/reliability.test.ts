@@ -34,8 +34,8 @@ test("default Android preparation never invokes iOS inventory", async () => {
 });
 
 test("Android uses the host ABI and platform-aware workflow selects runner label arrays", () => {
-  expect(androidSystemImage("x64")).toBe("system-images;android-34;google_apis;x86_64");
-  expect(androidSystemImage("arm64")).toBe("system-images;android-34;google_apis;arm64-v8a");
+  expect(androidSystemImage("x64")).toBe("system-images;android-37.0;google_apis;x86_64");
+  expect(androidSystemImage("arm64")).toBe("system-images;android-37.0;google_apis;arm64-v8a");
   expect(WORKFLOW_YAML).toContain("options: [ios, android]");
   expect(WORKFLOW_YAML).toContain(
     "inputs.platform == 'android' && '[\"ubuntu-latest\"]' || '[\"macos-latest\"]'",

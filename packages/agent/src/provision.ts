@@ -246,7 +246,7 @@ export async function prepareAndroid(
     // consistently agree on the default location of the discovery .ini file.
     await Bun.write(
       join(avdHome, "simbox.ini"),
-      `avd.ini.encoding=UTF-8\npath=${avdPath}\ntarget=android-34\n`,
+      `avd.ini.encoding=UTF-8\npath=${avdPath}\ntarget=${PINS.androidPlatform.split(";")[1]}\n`,
     );
     const acceleration = await run([join(sdkRoot, "emulator", "emulator"), "-accel-check"], {
       timeoutMs: 15_000,

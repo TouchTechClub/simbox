@@ -9,7 +9,7 @@ export const PINS = {
   deviceHub: "0.12.0",
   /** cloudflared GitHub release tag — https://github.com/cloudflare/cloudflared/releases */
   cloudflared: "2026.9.1",
-  /** Android SDK system image + platform installed for the emulator AVD. */
-  androidSystemImage: "system-images;android-34;google_apis;arm64-v8a",
-  androidPlatform: "platforms;android-34",
+  /** Android SDK system image + platform installed for the emulator AVD (Android 17). */
+  androidSystemImage: "system-images;android-37.0;google_apis;arm64-v8a",
+  androidPlatform: "platforms;android-37.0",
 } as const;

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
-import { remoteArgs, waitForRemote, waitForAndroid } from "../apps/cli/src/remote.js";
+import { remoteArgs, shouldReplay, waitForRemote, waitForAndroid } from "../apps/cli/src/remote.js";
 import { healthyProxy } from "../packages/agent/src/health.js";
 import { startGateway } from "../packages/agent/src/gateway.js";
 import { sessionDeviceCount } from "../packages/agent/src/devices.js";
@@ -473,4 +473,19 @@ test("iOS runners boot one default simulator without warmup, and its failure is 
   expect(events[0]).toBe("boot");
   expect(events[1]).toContain("simctl timed out");
   expect(events[2]).toBe("android");
+});
+
+test("exec replays only read-only or absolute commands, and only after a transport drop", () => {
+  const dropped = "Error (COMMAND_FAILED): Remote daemon is unavailable";
+  expect(shouldReplay(["devices", "--platform", "ios"], 1, dropped)).toBe(true);
+  expect(shouldReplay(["fold", "closed"], 1, "Daemon request timed out")).toBe(true);
+  expect(shouldReplay(["snapshot", "-i"], 1, "Failed to read daemon response")).toBe(true);
+  // Actions may already have run on the device: never replay them.
+  for (const command of ["click", "type", "fill", "install", "open", "press"])
+    expect(shouldReplay([command, "@e1"], 1, dropped)).toBe(false);
+  // Real command failures are reported, not retried.
+  expect(shouldReplay(["fold", "closed"], 1, "UNSUPPORTED_OPERATION single-panel-device")).toBe(
+    false,
+  );
+  expect(shouldReplay(["devices"], 0, dropped)).toBe(false);
 });

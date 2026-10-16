@@ -147,7 +147,7 @@ function printRepoConnected(repo: {
 
 // ---- sim ----
 
-const SIM_TIMEOUT_MS = 12 * 60 * 1000;
+const SIM_TIMEOUT_MS = 25 * 60 * 1000;
 const SIM_POLL_MS = 3000;
 
 export async function cmdSim(opts: {

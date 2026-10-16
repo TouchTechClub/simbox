@@ -32,7 +32,7 @@ import { waitForAuthoritativeDns } from "./dns.js";
 import { startGateway } from "./gateway.js";
 import { createPreviewHub } from "./preview-hub.js";
 import { healthyProxy, waitForProxy } from "./health.js";
-import { bootDefaultSimulator, prepareIOS } from "./ios.js";
+import { prepareIOS, quietHost, raisePriority } from "./ios.js";
 import { ensureFoldableSimulator, selectXcode } from "./xcode.js";
 import { preparePlatforms } from "./platforms.js";
 
@@ -175,6 +175,7 @@ function spawnNamedTunnel(named: RunTunnelResponse): TunnelSpawn {
     },
   );
   const child = track("cloudflared", proc);
+  if (process.platform === "darwin") void raisePriority(proc.pid, "cloudflared");
   let settled = false;
   const url = new Promise<string>((resolve, reject) => {
     const deadline = setTimeout(() => {
@@ -219,6 +220,7 @@ function spawnQuickTunnel(): TunnelSpawn {
     { stdout: "pipe", stderr: "pipe", stdin: "ignore" },
   );
   const child = track("cloudflared", proc);
+  if (process.platform === "darwin") void raisePriority(proc.pid, "cloudflared");
 
   // The trycloudflare URL is printed on stderr once the tunnel is up.
   let settled = false;
@@ -637,6 +639,8 @@ async function main(): Promise<void> {
 
   state.device = await requestRunConfig();
   if (state.device) info(`device requested: ${JSON.stringify(state.device)}`);
+  if (process.platform === "darwin") await quietHost();
+
   // agent-device resolves its toolchain once, so the Xcode switch has to land
   // before its daemon starts. A requested device the runner cannot provide
   // fails the run rather than silently serving the default phone.
@@ -689,13 +693,13 @@ async function main(): Promise<void> {
   await waitForProxy(`http://127.0.0.1:${PROXY_PORT}/agent-device/health`);
   info(`agent-device gateway on 127.0.0.1:${PROXY_PORT} (pid ${state.children.proxy.proc.pid})`);
 
-  // Platform preparation must not gate tunnel registration. iOS warmup is
-  // explicitly opt-in, and even its failure cannot skip Android provisioning.
-  void preparePlatforms({
-    warmIOS: process.platform === "darwin" && Bun.env.SIMBOX_WARM_IOS === "true",
+  // A Mac runner exists only for iOS: boot its iPhone and build XCTest before
+  // the tunnel starts, so the first commands neither race that work for 3 vCPUs
+  // nor land in the simulator's first-boot storm. Failure only warns. Android
+  // (Linux) preparation stays in the background and never gates registration.
+  const platforms = preparePlatforms({
+    warmIOS: process.platform === "darwin",
     ios: () => prepareIOS(state.agentDeviceBin, state.foldableUdid),
-    bootIOS:
-      process.platform === "darwin" ? () => bootDefaultSimulator(state.foldableUdid) : undefined,
     android: () =>
       prepareAndroid(
         { foldable: state.device?.foldable === true },
@@ -708,6 +712,7 @@ async function main(): Promise<void> {
       ),
     warn,
   });
+  if (process.platform === "darwin") await platforms;
 
   // 5. cloudflared — a named tunnel when the API provisions one, else a quick
   // tunnel. Either way, wait for the URL.

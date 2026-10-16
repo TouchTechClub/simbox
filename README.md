@@ -31,14 +31,19 @@ command. Its session is stable for the GitHub run, even if the tunnel restarts.
 Cold `open`/`boot`/`prepare` commands get a five-minute startup budget; override
 with `--timeout <ms>`. To use several sessions/devices, pass `--session <name>`
 consistently to each command. Simbox never automatically replays device actions
-after a transport failure: inspect with `simbox exec session list` first.
+after a transport failure: inspect with `simbox exec session list` first. Only
+read-only or absolute commands (`devices`, `snapshot`, `screenshot`, `fold`,
+`session`, `appstate`, `apps`, `get`, `is`) are retried, up to twice, when the
+tunnel drops.
 The runner streams JSON whitespace keepalives during RPCs so a cold boot does
 not hit Cloudflare's idle-response timeout. Startup progress is buffered; the
 final command result is returned when ready.
-iOS prewarming is **off by default**: Android startup never depends on
-CoreSimulator inventory or XCTest. Opt into best-effort iOS warmup with the
-action's `warm_ios: "true"` input. Warmup failures are warnings, not fatal run
-failures. The generated workflow uses stable `macos-latest`; preview-only device
+iOS runs boot their iPhone and build agent-device's XCTest runner before the
+run goes live, which adds a few minutes to startup. A simulator's first boot
+saturates the 3-vCPU hosted Macs for several minutes; commands sent during it
+time out and the tunnel drops. The runner also turns off host Spotlight
+indexing and raises cloudflared's priority. Warmup failures are warnings, not
+fatal run failures. Android runs on Linux and never waits for iOS. The generated workflow uses stable `macos-latest`; preview-only device
 types require opting into `xcode-27` in your repository's workflow.
 
 Android requires **Linux/KVM**: GitHub's ARM macOS VMs cannot initialize HVF

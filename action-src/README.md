@@ -63,12 +63,12 @@ ARM64/Xcode. Existing KVM access is preserved; otherwise passwordless sudo is
 required to grant it. See [runner settings](../docs/RUNNERS-AND-SKILLS.md) for
 account defaults, repository overrides, Blacksmith prerequisites and custom labels.
 
-| Input      | Required | Default                             | Description                                      |
-| ---------- | -------- | ----------------------------------- | ------------------------------------------------ |
-| `token`    | yes      | —                                   | `SIMBOX_TOKEN` repo secret                       |
-| `api_url`  | no       | `https://api.simbox.touchtech.club` | API base URL (staging override)                  |
-| `version`  | no       | `v1`                                | Release tag of the agent tarball to download     |
-| `warm_ios` | no       | `false`                             | Best-effort iOS prewarming; never blocks Android |
+| Input      | Required | Default                             | Description                                                   |
+| ---------- | -------- | ----------------------------------- | ------------------------------------------------------------- |
+| `token`    | yes      | —                                   | `SIMBOX_TOKEN` repo secret                                    |
+| `api_url`  | no       | `https://api.simbox.touchtech.club` | API base URL (staging override)                               |
+| `version`  | no       | `v1`                                | Release tag of the agent tarball to download                  |
+| `warm_ios` | no       | `false`                             | Ignored since v0.4.10: iOS runs always warm before going live |
 
 ## What the step does
 
@@ -79,7 +79,7 @@ account defaults, repository overrides, Blacksmith prerequisites and custom labe
 3. Untars and runs `simbox-agent`, which:
    - installs `agent-device` + `cloudflared` (versions pinned in the binary),
    - on Linux, installs and headlessly boots the Android AVD (`android_ready` requires boot completion),
-   - optionally prewarms iOS (`warm_ios: "true"`); failures never block Android,
+   - on macOS, boots the run's iPhone and builds XCTest before the tunnel starts,
    - starts `agent-device proxy` on `127.0.0.1:4311`, with an activity-aware
      gateway on `127.0.0.1:4310` behind a trycloudflare tunnel,
    - registers `tunnel_url` + a per-run `daemon_token` with the API over TLS

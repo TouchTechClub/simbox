@@ -12,7 +12,7 @@ inputs:
     required: false
     default: ""
   warm_ios:
-    description: Optional best-effort iOS prewarming. Leave false for Android-only runs.
+    description: Ignored since v0.4.10; iOS runs always warm before going live.
     required: false
     default: "false"
   token:

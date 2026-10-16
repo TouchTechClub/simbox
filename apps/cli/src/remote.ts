@@ -114,6 +114,33 @@ export function remoteArgs(args: string[], info: ConnectInfo, stateDir: string):
   return [...result, ...tail];
 }
 
+/**
+ * Commands that only read state or set it to an absolute value (a fold pose).
+ * Replaying one after a dropped tunnel is harmless; taps, typing, installs and
+ * opens are never replayed.
+ */
+const REPLAY_SAFE = new Set([
+  "devices",
+  "snapshot",
+  "screenshot",
+  "fold",
+  "session",
+  "appstate",
+  "apps",
+  "get",
+  "is",
+]);
+
+/** agent-device failures where the request may never have reached the runner. */
+const TRANSPORT_ERROR =
+  /Remote daemon is unavailable|Daemon request timed out|Failed to read daemon response|fetch failed|ECONNRESET|socket hang up/;
+
+export function shouldReplay(args: string[], code: number, output: string): boolean {
+  return code !== 0 && REPLAY_SAFE.has(args[0] ?? "") && TRANSPORT_ERROR.test(output);
+}
+
+const REPLAY_ATTEMPTS = 3;
+
 function hasFlag(args: string[], flag: string): boolean {
   const end = args.indexOf("--");
   return (end < 0 ? args : args.slice(0, end)).some(
@@ -159,29 +186,68 @@ export async function cmdExec(args: string[]): Promise<void> {
     info = await waitForRemote(initial);
   }
   writeCachedRun(info);
+  const replaySafe = REPLAY_SAFE.has(args[0]!);
+  let connected: ConnectInfo = info;
+  let result = await runRemote(bin, args, connected, replaySafe);
+  for (let attempt = 1; attempt < REPLAY_ATTEMPTS; attempt++) {
+    if (!shouldReplay(args, result.code, result.output)) break;
+    process.stderr.write(
+      `Tunnel dropped during \`${args[0]}\`; retrying (${attempt}/${REPLAY_ATTEMPTS - 1}).\n`,
+    );
+    await sleep(attempt * 5_000);
+    if (!(await probeRemote(connected))) {
+      const refreshed = await refreshRemote();
+      if (!refreshed) break;
+      connected = await waitForRemote(refreshed);
+      writeCachedRun(connected);
+    }
+    result = await runRemote(bin, args, connected, replaySafe);
+  }
+  if (replaySafe) {
+    process.stdout.write(result.stdout);
+    process.stderr.write(result.stderr);
+  }
+  const code = result.code;
+  if (
+    code === 0 &&
+    !args.some((arg) => ["help", "--help", "-h", "--version", "version"].includes(arg))
+  )
+    registerDevice(connected, { args });
+  if (code !== 0 && !replaySafe) {
+    process.stderr.write(
+      "Simbox did not retry the device command (it may already have executed). Use `simbox exec session list` to inspect it; the next command refreshes the tunnel automatically.\n",
+    );
+  }
+  process.exitCode = code;
+}
+
+/**
+ * Run agent-device against the runner. Replay-safe commands are buffered so a
+ * failed attempt that will be retried prints nothing.
+ */
+async function runRemote(
+  bin: string,
+  args: string[],
+  info: ConnectInfo,
+  capture: boolean,
+): Promise<{ code: number; output: string; stdout: string; stderr: string }> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     AGENT_DEVICE_DAEMON_AUTH_TOKEN: info.daemonToken,
   };
   delete env.AGENT_DEVICE_REMOTE_CONFIG;
   delete env.AGENT_DEVICE_DAEMON_BASE_URL;
+  let stdout = "";
+  let stderr = "";
   const code = await new Promise<number>((resolve, reject) => {
     const child = spawn(bin, remoteArgs(args, info, join(configDir(), "agent-device")), {
-      stdio: "inherit",
+      stdio: capture ? ["inherit", "pipe", "pipe"] : "inherit",
       env,
     });
+    child.stdout?.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
+    child.stderr?.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
     child.on("error", reject);
-    child.on("exit", (status) => resolve(status ?? 1));
+    child.on("close", (status) => resolve(status ?? 1));
   });
-  if (
-    code === 0 &&
-    !args.some((arg) => ["help", "--help", "-h", "--version", "version"].includes(arg))
-  )
-    registerDevice(info, { args });
-  if (code !== 0) {
-    process.stderr.write(
-      "Simbox did not retry the device command (it may already have executed). Use `simbox exec session list` to inspect it; the next command refreshes the tunnel automatically.\n",
-    );
-  }
-  process.exitCode = code;
+  return { code, output: stdout + stderr, stdout, stderr };
 }

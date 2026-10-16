@@ -27,27 +27,30 @@ export function selectWarmSimulator(
 }
 
 /**
- * Boot one iPhone so a fresh runner has a device to show. The device hub only
- * lists simulators that have booted before, so without this S5 sees an empty
- * inventory and has nothing to attach until a CLI command boots one.
+ * Hosted Macs have 3 vCPUs. A simulator's first boot saturates them for
+ * minutes, and host Spotlight makes it worse by indexing the simulator's files
+ * (mds kills and respawns mdworker_shared hundreds of times). Nothing on a CI
+ * runner needs Spotlight. Best effort: needs passwordless sudo.
  */
-export async function bootDefaultSimulator(preferredUdid?: string): Promise<void> {
-  const inventory = await run(["xcrun", "simctl", "list", "devices", "available", "-j"], {
-    timeoutMs: 120_000,
-  });
-  if (inventory.code !== 0) throw new Error("could not inspect iOS simulator inventory");
-  const device = selectWarmSimulator(
-    (JSON.parse(inventory.stdout) as { devices: Record<string, Simulator[]> }).devices,
-    preferredUdid,
-  );
-  if (!device) throw new Error("no available iPhone simulator on the runner");
-  if (device.state === "Booted") return;
-  const boot = await run(["xcrun", "simctl", "boot", device.udid], { timeoutMs: 120_000 });
-  if (boot.code !== 0) throw new Error(`could not start ${device.name}`);
-  info(`${device.name} booted for device previews`);
+export async function quietHost(): Promise<void> {
+  const result = await run(["sudo", "-n", "mdutil", "-a", "-i", "off"], { timeoutMs: 30_000 });
+  if (result.code === 0) info("host Spotlight indexing off");
+  else warn(`could not turn off Spotlight indexing: ${result.stderr.trim().slice(0, 200)}`);
 }
 
-/** Optional iOS infrastructure warmup; never a prerequisite for Android startup. */
+/**
+ * Keep the tunnel served while simulators saturate the CPU: a starved
+ * cloudflared misses edge heartbeats and drops in-flight requests.
+ */
+export async function raisePriority(pid: number, name: string): Promise<void> {
+  const result = await run(["sudo", "-n", "renice", "-n", "-20", "-p", String(pid)], {
+    timeoutMs: 10_000,
+  });
+  if (result.code !== 0)
+    warn(`could not raise ${name} priority: ${result.stderr.trim().slice(0, 200)}`);
+}
+
+/** Boot the run's iPhone and build XCTest before the run is announced live. */
 export async function prepareIOS(agentDeviceBin: string, preferredUdid?: string): Promise<void> {
   const started = Date.now();
   const deadline = started + 10 * 60_000;

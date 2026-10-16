@@ -12,7 +12,7 @@ inputs:
     required: false
     default: ""
   warm_ios:
-    description: Optional best-effort iOS prewarming. Leave false for Android-only runs.
+    description: Ignored since v0.4.10; iOS runs always warm before going live.
     required: false
     default: "false"
   token:
@@ -64,8 +64,8 @@ runs:
           fi
         fi
         case "$(uname -s)-$(uname -m)" in
-          Darwin-arm64) TARBALL=simbox-agent-darwin-arm64.tar.gz; SHA=720b9db83df591f162f3af2a9c61fc61cfbb33f16a8a3d6f6aafc3f2374a033b ;;
-          Linux-x86_64) TARBALL=simbox-agent-linux-amd64.tar.gz; SHA=8d0c64ab9b07ed9e79e58be67e3754917c1ddfed239be2f6809b038c66ce1170 ;;
+          Darwin-arm64) TARBALL=simbox-agent-darwin-arm64.tar.gz; SHA=be2b135d358b6599dbc4f19aa19ad30a57b269c6b6533530355e973d2e9ea39c ;;
+          Linux-x86_64) TARBALL=simbox-agent-linux-amd64.tar.gz; SHA=145e50bb7b00c9c1cbd98a74f852660da252bedf2838aa72dcb974c8814773dc ;;
           *) echo "Unsupported Simbox runner OS/architecture" >&2; exit 1 ;;
         esac
         curl -fsSL "https://github.com/TouchTechClub/simbox/releases/download/${{ inputs.version }}/$TARBALL" -o "$TARBALL"

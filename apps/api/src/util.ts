@@ -64,7 +64,7 @@ export function bytesToBase64Url(bytes: Uint8Array): string {
 
 export function apiError<E extends HonoEnv>(
   c: Context<E>,
-  status: 400 | 401 | 403 | 404 | 409 | 500 | 502 | 503,
+  status: 400 | 401 | 403 | 404 | 409 | 413 | 500 | 502 | 503,
   error: string,
   message: string,
 ): Response {
@@ -97,7 +97,19 @@ export function toPublicRepo(row: RepoRow): Repo {
     state: row.state,
     prUrl: row.pr_url,
     createdAt: toMs(row.created_at),
+    workflowVersion: row.workflow_version,
   };
+}
+
+/**
+ * Whether a run's devices accept commands. Current agents report it in every
+ * heartbeat; older ones only report Android readiness and registered iOS runs
+ * once the simulator was up.
+ */
+export function devicesReady(row: RunRow): boolean {
+  if (row.state !== "live") return false;
+  if (row.devices_ready !== null) return row.devices_ready === 1;
+  return row.platform === "ios" || row.android_ready === 1;
 }
 
 export function toPublicRun(row: RunRow): PublicRun {
@@ -108,10 +120,12 @@ export function toPublicRun(row: RunRow): PublicRun {
     platform: row.platform,
     runner: row.runner,
     device: row.device ?? null,
+    bootedDevice: row.booted_device ?? null,
     tunnelUrl: row.tunnel_url,
     daemonToken: row.daemon_token,
     activeDevices: row.active_devices,
     androidReady: row.android_ready === 1,
+    devicesReady: devicesReady(row),
     createdAt: toMs(row.created_at),
     expiresAt: toMsOrNull(row.expires_at),
     endReason: row.end_reason,
@@ -126,6 +140,7 @@ export function toRunSummary(row: RunRow): RunSummary {
     platform: row.platform,
     runner: row.runner,
     device: row.device ?? null,
+    bootedDevice: row.booted_device ?? null,
     activeDevices: row.active_devices,
     createdAt: toMs(row.created_at),
     endedAt: toMsOrNull(row.ended_at),

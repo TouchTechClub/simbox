@@ -1,96 +1,15 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { currentRun, CliError } from "./client.js";
+import { CliError } from "./client.js";
 import { configDir } from "./config.js";
 import { daemonBaseUrl, findAgentDevice } from "./connect.js";
 import type { ConnectInfo } from "./connect.js";
 import { sleep } from "./util.js";
 import { registerDevice } from "./device-registration.js";
-import { clearCachedRun, readCachedRun, writeCachedRun } from "./run-cache.js";
+import { writeCachedRun } from "./run-cache.js";
+import { connectForArgs, probeRemote, refreshPlatform, waitForRemote } from "./runs.js";
 
 export const STARTUP_TIMEOUT_MS = 300_000;
-
-export async function waitForAndroid(
-  runId: string,
-  options: {
-    read?: typeof currentRun;
-    pause?: () => Promise<void>;
-    timeoutMs?: number;
-  } = {},
-): Promise<void> {
-  const deadline = Date.now() + (options.timeoutMs ?? 12 * 60_000);
-  do {
-    const run = await (options.read ?? currentRun)();
-    if (!run || run.id !== runId || run.state !== "live") {
-      throw new CliError(
-        "The run ended or was replaced while preparing Android. Run `simbox sim` again.",
-      );
-    }
-    if (run.platform === "ios") {
-      throw new CliError(
-        "Android needs a Linux/KVM run. Run `simbox repair`, then `simbox sim --new --platform android`.",
-      );
-    }
-    if (run.androidReady) return;
-    await (options.pause?.() ?? sleep(3000));
-  } while (Date.now() < deadline);
-  throw new CliError(
-    "Android AVD preparation did not complete. Inspect the Actions job's Android emulator prep logs. No device command was sent.",
-  );
-}
-
-/** Poll only reads: never replay an open/tap/install whose outcome is unknown. */
-export async function waitForRemote(
-  initial: ConnectInfo,
-  options: {
-    timeoutMs?: number;
-    probe?: (info: ConnectInfo) => Promise<boolean>;
-    refresh?: () => Promise<ConnectInfo | null>;
-    pause?: () => Promise<void>;
-  } = {},
-): Promise<ConnectInfo> {
-  const probe = options.probe ?? probeRemote;
-  const refresh = options.refresh ?? refreshRemote;
-  // Covers two supervisor heartbeat intervals plus tunnel restart/DNS time.
-  const deadline = Date.now() + (options.timeoutMs ?? 180_000);
-  let info = initial;
-  do {
-    if (await probe(info)) return info;
-    const next = await refresh();
-    if (!next || next.runId !== initial.runId) {
-      throw new CliError("The run ended or was replaced. Run `simbox sim` to connect again.");
-    }
-    info = next;
-    await (options.pause?.() ?? sleep(1000));
-  } while (Date.now() < deadline);
-  throw new CliError(
-    "The run is live but its tunnel/daemon is not ready. Retry `simbox sim` or inspect the Actions logs. No device command was sent.",
-  );
-}
-
-async function probeRemote(info: ConnectInfo): Promise<boolean> {
-  try {
-    const res = await fetch(`${daemonBaseUrl(info.tunnelUrl)}/health`, {
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) return false;
-    const body = (await res.json()) as { ok?: boolean; upstream?: { ok?: boolean } };
-    return body.ok === true && body.upstream?.ok !== false;
-  } catch {
-    return false;
-  }
-}
-
-async function refreshRemote(): Promise<ConnectInfo | null> {
-  const run = await currentRun();
-  if (run?.state !== "live" || !run.tunnelUrl || !run.daemonToken) return null;
-  return {
-    runId: run.id,
-    tunnelUrl: run.tunnelUrl,
-    daemonToken: run.daemonToken,
-    expiresAt: run.expiresAt,
-  };
-}
 
 export function remoteArgs(args: string[], info: ConnectInfo, stateDir: string): string[] {
   // Isolate from saved agent-device proxy profiles: those may hold a stale URL
@@ -169,23 +88,9 @@ export async function cmdExec(args: string[]): Promise<void> {
   }
   const bin = findAgentDevice();
   if (!bin) throw new CliError("Install agent-device first: npm i -g agent-device@0.21.28");
-  const android = args.some(
-    (arg, i) => arg === "--platform=android" || (arg === "--platform" && args[i + 1] === "android"),
-  );
-  // A reachable cached endpoint skips the API round-trip. Android commands
-  // still ask the API, which alone knows whether the AVD is ready.
-  let info = android ? null : readCachedRun();
-  if (info && !(await probeRemote(info))) info = null;
-  if (!info) {
-    const initial = await refreshRemote();
-    if (!initial) {
-      clearCachedRun();
-      throw new CliError("No live run. Start one with `simbox sim`.");
-    }
-    if (android) await waitForAndroid(initial.runId);
-    info = await waitForRemote(initial);
-  }
-  writeCachedRun(info);
+  // Each platform has its own run and cache; the platform is explicit, or the
+  // only one active. An iOS endpoint never serves an Android command.
+  const { platform, info } = await connectForArgs(args);
   const replaySafe = REPLAY_SAFE.has(args[0]!);
   let connected: ConnectInfo = info;
   let result = await runRemote(bin, args, connected, replaySafe);
@@ -196,10 +101,10 @@ export async function cmdExec(args: string[]): Promise<void> {
     );
     await sleep(attempt * 5_000);
     if (!(await probeRemote(connected))) {
-      const refreshed = await refreshRemote();
-      if (!refreshed) break;
-      connected = await waitForRemote(refreshed);
-      writeCachedRun(connected);
+      const refreshed = await refreshPlatform(platform);
+      if (!refreshed || refreshed.runId !== connected.runId) break;
+      connected = await waitForRemote(refreshed, { refresh: () => refreshPlatform(platform) });
+      writeCachedRun(platform, connected);
     }
     result = await runRemote(bin, args, connected, replaySafe);
   }
@@ -212,7 +117,7 @@ export async function cmdExec(args: string[]): Promise<void> {
     code === 0 &&
     !args.some((arg) => ["help", "--help", "-h", "--version", "version"].includes(arg))
   )
-    registerDevice(connected, { args });
+    registerDevice(connected, { args, platform });
   if (code !== 0 && !replaySafe) {
     process.stderr.write(
       "Simbox did not retry the device command (it may already have executed). Use `simbox exec session list` to inspect it; the next command refreshes the tunnel automatically.\n",

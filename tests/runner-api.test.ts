@@ -1,11 +1,40 @@
 import { expect, test } from "bun:test";
 import { createDb, schema } from "../packages/db/src/index";
 import app from "../apps/api/src/index";
+import { sha256Hex } from "../apps/api/src/util";
 import { testD1 } from "./helpers/d1";
-import { WORKFLOW_YAML } from "../packages/shared/src/constants";
+import { fakeGithub } from "./helpers/fake-github";
+import {
+  defaultWorkflowSpec,
+  insertStep,
+  renderWorkflow,
+  WORKFLOW_YAML,
+} from "../packages/shared/src/workflow";
 import type { Env } from "../apps/api/src/env";
 
-test("authenticated runner settings, dispatch, history and repair preserve ownership and precedence", async () => {
+const LEGACY_WORKFLOW = `name: simbox
+on:
+  workflow_dispatch:
+    inputs:
+      platform: {type: choice, options: [ios, android]}
+      runner_labels: {type: string}
+`;
+
+const CATALOG = {
+  os: [
+    { version: "35", name: "Android 15" },
+    { version: "34", name: "Android 14" },
+    { version: "30", name: "Android 11", models: ["pixel_6"] },
+  ],
+  models: [
+    { id: "pixel_8", name: "Pixel 8" },
+    { id: "pixel_6", name: "Pixel 6" },
+    { id: "7.6in_foldable", name: "7.6in Foldable", foldable: true },
+  ],
+  defaults: { model: "pixel_8", os: "35" },
+};
+
+async function setup() {
   const storage = await testD1();
   const env = {
     DB: storage.DB,
@@ -17,7 +46,7 @@ test("authenticated runner settings, dispatch, history and repair preserve owner
     GITHUB_CLIENT_SECRET: "test",
     GITHUB_APP_ID: "test",
     GITHUB_APP_PRIVATE_KEY: "unused",
-    GITHUB_WEBHOOK_SECRET: "unused",
+    GITHUB_WEBHOOK_SECRET: "whsec-test",
   } satisfies Env;
   const db = createDb(env);
   const waits: Promise<unknown>[] = [];
@@ -25,30 +54,95 @@ test("authenticated runner settings, dispatch, history and repair preserve owner
     waitUntil: (promise: Promise<unknown>) => waits.push(promise),
     passThroughOnException() {},
   } as unknown as ExecutionContext;
+  const github = fakeGithub({ fullName: "owner/test", repoId: 1 });
+  github.state.files.set("main", WORKFLOW_YAML);
   const original = globalThis.fetch;
-  const dispatches: any[] = [];
-  let legacyWorkflow = false;
-  let rejectDispatch = false;
-  let nextGhId = 100;
-  try {
-    for (const id of ["user-a", "user-b"]) {
-      await db.insert(schema.user).values({
-        id,
-        name: id,
-        login: id,
-        email: `${id}@test.invalid`,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-      await db.insert(schema.session).values({
-        id: `session-${id}`,
-        userId: id,
-        token: `token-${id}`,
-        expiresAt: new Date(Date.now() + 86400_000),
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-    }
+  globalThis.fetch = github.fetch as typeof fetch;
+
+  for (const id of ["user-a", "user-b"]) {
+    await db.insert(schema.user).values({
+      id,
+      name: id,
+      login: id,
+      email: `${id}@test.invalid`,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(schema.session).values({
+      id: `session-${id}`,
+      userId: id,
+      token: `token-${id}`,
+      expiresAt: new Date(Date.now() + 86400_000),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(schema.account).values({
+      id: `account-${id}`,
+      accountId: id === "user-a" ? "11" : "12",
+      providerId: "github",
+      userId: id,
+      accessToken: `gho-${id}`,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+  }
+  github.state.pushAccess.set("gho-user-a", true);
+  await env.KV.put(
+    "gh_inst_token:1",
+    JSON.stringify({ token: "fake-installation-token", expiresAt: Date.now() / 1000 + 3600 }),
+  );
+
+  const call = async (
+    method: string,
+    path: string,
+    body?: unknown,
+    headers: Record<string, string> = { authorization: "Bearer token-user-a" },
+  ) => {
+    const response = await app.request(
+      path,
+      {
+        method,
+        headers: { ...headers, "content-type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      },
+      env,
+      executionCtx,
+    );
+    await Promise.all(waits.splice(0));
+    return { status: response.status, body: (await response.json()) as any };
+  };
+  const user = (path: string, body?: unknown, who = "user-a") =>
+    call(body === undefined ? "GET" : "POST", path, body, {
+      authorization: `Bearer token-${who}`,
+    });
+  const runner = (path: string, body: unknown) =>
+    call("POST", path, body, { authorization: "Bearer runner-secret" });
+  const webhook = async (event: string, payload: unknown) => {
+    const raw = JSON.stringify(payload);
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(env.GITHUB_WEBHOOK_SECRET),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const sig = Buffer.from(
+      await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(raw)),
+    ).toString("hex");
+    const response = await app.request(
+      "/webhooks/github",
+      {
+        method: "POST",
+        headers: { "x-github-event": event, "x-hub-signature-256": `sha256=${sig}` },
+        body: raw,
+      },
+      env,
+      executionCtx,
+    );
+    await Promise.all(waits.splice(0));
+    return response.status;
+  };
+  const connectA = async () => {
     await db.insert(schema.repos).values({
       user_id: "user-a",
       repo_id: 1,
@@ -56,195 +150,376 @@ test("authenticated runner settings, dispatch, history and repair preserve owner
       installation_id: 1,
       state: "ok",
       created_at: 1,
-      simbox_token_hash: "test",
+      workflow_version: 2,
+      simbox_token_hash: await sha256Hex("runner-secret"),
     });
-    await env.KV.put(
-      "gh_inst_token:1",
-      JSON.stringify({
-        token: "fake-installation-token",
-        expiresAt: Math.floor(Date.now() / 1000) + 3600,
-      }),
-    );
-    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      const path = new URL(typeof url === "string" ? url : url instanceof URL ? url.href : url.url)
-        .pathname;
-      if (path.endsWith("/dispatches")) {
-        if (rejectDispatch)
-          return Response.json(
-            { message: "Unexpected inputs provided: runner_labels" },
-            { status: 422 },
-          );
-        dispatches.push(JSON.parse(init?.body as string));
-        nextGhId++;
-        return new Response(null, { status: 204 });
-      }
-      if (path.endsWith("/runs"))
-        return Response.json({ workflow_runs: [{ id: nextGhId, status: "queued" }] });
-      if (path.endsWith("/cancel")) return new Response(null, { status: 204 });
-      if (path.endsWith("/secrets/public-key"))
-        return Response.json({
-          key: Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64"),
-          key_id: "test-key",
-        });
-      if (path.includes("/secrets/")) return new Response(null, { status: 204 });
-      if (path.includes("/contents/")) {
-        if (init?.method === "PUT") {
-          legacyWorkflow = false;
-          return Response.json({});
-        }
-        return Response.json({
-          sha: "fake-sha",
-          encoding: "base64",
-          content: Buffer.from(legacyWorkflow ? "on: workflow_dispatch" : WORKFLOW_YAML).toString(
-            "base64",
-          ),
-        });
-      }
-      if (path === "/repos/owner/test") return Response.json({});
-      throw new Error(`Unexpected external call ${path}`);
-    }) as typeof fetch;
-    const request = async (path: string, body?: unknown, user = "user-a") => {
-      const response = await app.request(
-        path,
-        {
-          method: body === undefined ? "GET" : "POST",
-          headers: { authorization: `Bearer token-${user}`, "content-type": "application/json" },
-          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        },
-        env,
-        executionCtx,
-      );
-      await Promise.all(waits.splice(0));
-      return { status: response.status, body: (await response.json()) as any };
-    };
-    expect((await app.request("/v1/runners", {}, env, executionCtx)).status).toBe(401);
-    const initial = await request("/v1/runners");
-    expect(initial.status).toBe(200);
-    expect(initial.body.effective.android.source).toBe("default");
-    const account = { labels: ["blacksmith-2vcpu-ubuntu-2404"] };
-    const repository = { labels: ["blacksmith-4vcpu-ubuntu-2404"] };
-    expect(
-      (await request("/v1/runners/account", { android: account })).body.effective.android.source,
-    ).toBe("account");
-    expect(
-      (await request("/v1/runners/account", { ios: { labels: ["macos-latest"] } })).body.account
-        .android,
-    ).toEqual(account);
-    expect((await request("/v1/runners", undefined, "user-b")).body.account.android).toBeNull();
-    expect((await request("/v1/runners/repo", { android: repository }, "user-b")).status).toBe(404);
-    expect(
-      (await request("/v1/runners/repo", { android: repository })).body.effective.android.source,
-    ).toBe("repository");
-    expect(
-      (await request("/v1/runners/account", { android: { labels: ["${{ secrets.TOKEN }}"] } }))
-        .status,
-    ).toBe(400);
-    expect((await request("/v1/runners/account", { unexpected: null })).status).toBe(400);
-    expect((await request("/v1/runners/other", { android: null })).status).toBe(400);
-    expect((await request("/v1/runners/doctor")).body.checks.every((check: any) => check.ok)).toBe(
-      true,
-    );
-    legacyWorkflow = true;
-    expect(
-      (await request("/v1/runners/doctor")).body.checks.find(
-        (check: any) => check.name === "workflow",
-      ).ok,
-    ).toBe(false);
-
-    rejectDispatch = true;
-    const rejected = await request("/v1/runs/ensure", { platform: "android" });
-    expect(rejected.status).toBe(409);
-    expect(rejected.body.error).toBe("workflow_needs_repair");
-    expect(dispatches).toHaveLength(0); // no fallback
-    expect((await db.select().from(schema.runs)).length).toBe(0);
-    rejectDispatch = false;
-    expect((await request("/v1/repo/repair", {})).status).toBe(200);
-    expect((await request("/v1/runners")).body.repository.android).toEqual(repository);
-    expect((await request("/v1/runners")).body.account.android).toEqual(account);
-    expect((await request("/v1/runners/doctor")).body.checks.every((check: any) => check.ok)).toBe(
-      true,
-    );
-
-    const started = await request("/v1/runs/ensure", { platform: "android" });
-    expect(started.status).toBe(200);
-    expect(dispatches[0].inputs).toEqual({
-      platform: "android",
-      runner_labels: JSON.stringify(repository.labels),
-    });
-    let row = (await db.select().from(schema.runs)).find((run) => run.id === started.body.runId);
-    expect(row?.runner).toEqual(repository);
-    storage.sqlite
-      .query(
-        "UPDATE runs SET state='live', tunnel_url='https://fake.invalid', daemon_token='fake' WHERE id=?",
-      )
-      .run(started.body.runId);
-    await request("/v1/runners/repo", { android: null });
-    expect((await request("/v1/runs/ensure", { platform: "android" })).body.runId).toBe(
-      started.body.runId,
-    );
-    expect(dispatches).toHaveLength(1);
-    expect((await request("/v1/runs/current")).body.run.runner).toEqual(repository);
-    expect(
-      (await request("/v1/runs/ensure", { platform: "android", runner: account })).body.error,
-    ).toBe("runner_mismatch");
-    expect((await request("/v1/runs/ensure", { runner: account })).status).toBe(400);
-    expect((await request("/v1/runs/ensure", { platform: "ios" })).body.error).toBe(
-      "platform_mismatch",
-    );
-    expect(
-      (
-        await request("/v1/runs/ensure", {
-          new: true,
-          platform: "android",
-          runner: { labels: ["windows-latest"] },
-        })
-      ).status,
-    ).toBe(400);
-    expect((await request("/v1/runs/ensure", { device: { foldable: true } })).status).toBe(400);
-    expect(
-      (await request("/v1/runs/ensure", { platform: "android", device: { foldable: true } })).body
-        .error,
-    ).toBe("device_mismatch");
-    expect((await request("/v1/runs/ensure", { platform: "android", device: {} })).body.runId).toBe(
-      started.body.runId,
-    ); // an empty profile is the default device
-    for (const device of [{ xcode: "27.1" }, { foldable: "yes" }, { hinge: true }])
-      expect(
-        (await request("/v1/runs/ensure", { new: true, platform: "android", device })).body.error,
-      ).toBe("invalid_device");
-    expect((await request("/v1/runs/current")).body.run.state).toBe("live"); // invalid input never cancels
-    const next = await request("/v1/runs/ensure", {
-      new: true,
-      platform: "android",
-      runner: { labels: ["ubuntu-latest"] },
-      device: { foldable: true },
-    });
-    expect(next.status).toBe(200);
-    expect(dispatches[1].inputs).toEqual({
-      platform: "android",
-      runner_labels: '["ubuntu-latest"]',
-    }); // the runner reads the device from /v1/runs/config, not workflow inputs
-    expect(dispatches[1].inputs.runner_labels).toBe('["ubuntu-latest"]');
-    row = (await db.select().from(schema.runs)).find((run) => run.id === next.body.runId);
-    expect(row?.runner).toEqual({ labels: ["ubuntu-latest"] });
-    expect(row?.device).toEqual({ foldable: true });
-    const history = await request("/v1/runs");
-    expect(history.body.runs.find((run: any) => run.id === started.body.runId).runner).toEqual(
-      repository,
-    );
-    expect(history.body.runs.find((run: any) => run.id === next.body.runId).device).toEqual({
-      foldable: true,
-    });
-    expect((await request("/v1/runs/current", undefined, "user-b")).body.run).toBeNull();
-
-    await request("/v1/repo/disconnect", {});
-    const disconnected = await request("/v1/runners");
-    expect(disconnected.body.repository).toBeNull();
-    expect(disconnected.body.account.android).toEqual(account);
-    expect(disconnected.body.effective.android.source).toBe("account");
-  } finally {
+  };
+  const runRow = (id: string) =>
+    storage.sqlite.query("select * from runs where id = ?").get(id) as any;
+  const close = async () => {
     globalThis.fetch = original;
     await Promise.all(waits);
     storage.sqlite.close();
+  };
+  return { env, db, github, user, call, runner, webhook, connectA, runRow, storage, close };
+}
+
+test("runner and device settings layer by scope and stay per user", async () => {
+  const t = await setup();
+  try {
+    await t.connectA();
+    expect((await t.call("GET", "/v1/runners", undefined, {})).status).toBe(401);
+    const initial = await t.user("/v1/runners");
+    expect(initial.body.effective.android.source).toBe("default");
+    expect(initial.body.devices.effective.ios).toEqual({ device: null, sources: {} });
+
+    const account = { labels: ["blacksmith-2vcpu-ubuntu-2404"] };
+    const repository = { labels: ["blacksmith-4vcpu-ubuntu-2404"] };
+    expect(
+      (await t.user("/v1/runners/account", { android: account })).body.effective.android.source,
+    ).toBe("account");
+    expect((await t.user("/v1/runners", undefined, "user-b")).body.account.android).toBeNull();
+    expect((await t.user("/v1/runners/repo", { android: repository }, "user-b")).status).toBe(404);
+    expect(
+      (await t.user("/v1/runners/repo", { android: repository })).body.effective.android.source,
+    ).toBe("repository");
+    expect(
+      (await t.user("/v1/runners/account", { android: { labels: ["${{ secrets.TOKEN }}"] } }))
+        .status,
+    ).toBe(400);
+    expect((await t.user("/v1/runners/other", { android: null })).status).toBe(400);
+
+    // Device defaults layer field by field: the repo's OS keeps the account's model.
+    await t.user("/v1/devices/account", { ios: { model: "iPhone 16 Pro", os: "18.4" } });
+    const layered = await t.user("/v1/devices/repo", { ios: { os: "17" } });
+    expect(layered.body.devices.effective.ios).toEqual({
+      device: { model: "iPhone 16 Pro", os: "17" },
+      sources: { model: "account", os: "repository" },
+    });
+    expect((await t.user("/v1/devices/account", { ios: { xcode: "27.1" } })).body.error).toBe(
+      "invalid_device",
+    );
+    expect((await t.user("/v1/devices/account", { android: { os: "fifteen" } })).status).toBe(400);
+    expect(
+      (await t.user("/v1/devices/repo", { ios: null })).body.devices.repository.ios,
+    ).toBeNull();
+  } finally {
+    await t.close();
   }
-}, 15_000);
+});
+
+test("iOS and Android runs are independent, correlated by run id, and only the matching platform is replaced", async () => {
+  const t = await setup();
+  try {
+    await t.connectA();
+    const ios = await t.user("/v1/runs/ensure", { platform: "ios" });
+    expect(ios.status).toBe(200);
+    expect(ios.body.state).toBe("dispatching");
+    const android = await t.user("/v1/runs/ensure", {
+      platform: "android",
+      device: { model: "pixel_8" },
+    });
+    expect(android.status).toBe(200);
+    expect(android.body.runId).not.toBe(ios.body.runId);
+    expect(t.github.state.runs.map((r) => r.inputs)).toEqual([
+      { platform: "ios", runner_labels: '["macos-latest"]', simbox_run: ios.body.runId },
+      { platform: "android", runner_labels: '["ubuntu-latest"]', simbox_run: android.body.runId },
+    ]);
+    // Re-ensuring a platform reuses its run instead of dispatching again.
+    expect((await t.user("/v1/runs/ensure", { platform: "ios" })).body.runId).toBe(ios.body.runId);
+    expect(t.github.state.runs).toHaveLength(2);
+    // Without a platform, two active runs default to iOS.
+    expect((await t.user("/v1/runs/ensure", {})).body.runId).toBe(ios.body.runId);
+
+    // Runner calls name their run: GitHub ids bind exactly, even out of order.
+    const [ghIos, ghAndroid] = t.github.state.runs;
+    const config = await t.runner("/v1/runs/config", {
+      ghRunId: ghAndroid!.id,
+      runId: android.body.runId,
+    });
+    expect(config.body).toEqual({
+      platform: "android",
+      device: { model: "pixel_8" },
+      runId: android.body.runId,
+    });
+    expect(t.runRow(android.body.runId).gh_run_id).toBe(ghAndroid!.id);
+    // A mismatched pair is refused.
+    expect(
+      (await t.runner("/v1/runs/config", { ghRunId: ghAndroid!.id, runId: ios.body.runId })).status,
+    ).toBe(403);
+
+    // Webhooks bind by the run id in the run name and ignore other workflows.
+    const workflowRun = (run: typeof ghIos, extra: object = {}) => ({
+      action: "in_progress",
+      installation: { id: 1 },
+      repository: { full_name: "owner/test" },
+      workflow_run: {
+        id: run!.id,
+        status: "in_progress",
+        conclusion: null,
+        event: "workflow_dispatch",
+        path: ".github/workflows/simbox.yml",
+        display_title: run!.display_title,
+        ...extra,
+      },
+    });
+    expect(
+      await t.webhook("workflow_run", workflowRun(ghIos, { path: ".github/workflows/ci.yml" })),
+    ).toBe(200);
+    expect(t.runRow(ios.body.runId).gh_run_id).toBeNull();
+    expect(await t.webhook("workflow_run", workflowRun(ghIos))).toBe(200);
+    expect(t.runRow(ios.body.runId)).toMatchObject({ gh_run_id: ghIos!.id, state: "booting" });
+
+    // Register makes it live and starts the hard-exit clock there.
+    expect(t.runRow(ios.body.runId).expires_at).toBeNull();
+    const registered = await t.runner("/v1/runs/register", {
+      ghRunId: ghIos!.id,
+      runId: ios.body.runId,
+      tunnelUrl: "https://ios.example.invalid",
+      daemonToken: "daemon-ios",
+      versions: { agent: "x", agentDevice: "x", cloudflared: "x" },
+    });
+    expect(registered.status).toBe(200);
+    expect(t.runRow(ios.body.runId).expires_at).toBeGreaterThan(Date.now() / 1000 + 3600);
+    // Readiness follows the agent's heartbeat when it reports one.
+    const beatIos = (devicesReady: boolean) =>
+      t.runner("/v1/runs/heartbeat", {
+        ghRunId: ghIos!.id,
+        runId: ios.body.runId,
+        activeDevices: 1,
+        androidReady: false,
+        devicesReady,
+      });
+    await beatIos(false);
+    expect((await t.user("/v1/runs/current?platform=ios")).body.run.devicesReady).toBe(false);
+    expect((await beatIos(true)).status).toBe(200);
+    // A late, out-of-order webhook never moves a live run backwards.
+    await t.webhook("workflow_run", workflowRun(ghIos, { status: "queued" }));
+    expect(t.runRow(ios.body.runId).state).toBe("live");
+
+    const live = await t.user("/v1/runs/ensure", { platform: "ios" });
+    expect(live.body).toMatchObject({
+      state: "live",
+      tunnelUrl: "https://ios.example.invalid",
+      daemonToken: "daemon-ios",
+    });
+
+    // The runner reports its catalog and booted device.
+    await t.runner("/v1/runs/inventory", {
+      ghRunId: ghAndroid!.id,
+      runId: android.body.runId,
+      catalog: CATALOG,
+      booted: { model: "pixel_8", os: "35", name: "Pixel 8", id: "emulator-5554" },
+    });
+    const active = await t.user("/v1/runs/active");
+    expect(active.body.runs.map((r: any) => [r.platform, r.state, r.devicesReady])).toEqual([
+      ["ios", "live", true],
+      ["android", "dispatching", false],
+    ]);
+    expect(active.body.runs[1].bootedDevice).toMatchObject({ name: "Pixel 8" });
+    expect((await t.user("/v1/runs/current?platform=ios")).body.run.id).toBe(ios.body.runId);
+    const inventory = await t.user("/v1/inventory?platform=android");
+    expect(inventory.body.inventory.models).toHaveLength(3);
+    expect(inventory.body.runner).toEqual({ labels: ["ubuntu-latest"] });
+
+    // Requests the runner cannot satisfy fail before dispatching anything.
+    const impossible = await t.user("/v1/runs/ensure", {
+      new: true,
+      platform: "android",
+      device: { model: "pixel_8", os: "30" },
+    });
+    expect(impossible.status).toBe(400);
+    expect(impossible.body.error).toBe("invalid_device");
+    expect(impossible.body.message).toContain("Pixel 8 cannot run OS 30");
+    expect(t.runRow(android.body.runId).state).toBe("dispatching"); // invalid input never cancels
+
+    // --new replaces only Android; iOS keeps running.
+    const replaced = await t.user("/v1/runs/ensure", {
+      new: true,
+      platform: "android",
+      device: { os: "oldest" },
+    });
+    expect(replaced.status).toBe(200);
+    expect(t.runRow(android.body.runId)).toMatchObject({
+      state: "closing",
+      end_reason: "replaced",
+    });
+    expect(t.github.state.cancelled).toEqual([ghAndroid!.id]);
+    expect(t.runRow(ios.body.runId).state).toBe("live");
+    // The replaced agent learns its run is over.
+    const beat = await t.runner("/v1/runs/heartbeat", {
+      ghRunId: ghAndroid!.id,
+      runId: android.body.runId,
+      activeDevices: 0,
+      androidReady: false,
+    });
+    expect(beat).toMatchObject({ status: 409, body: { error: "run_over" } });
+
+    // Stop ends iOS through GitHub; the completed webhook finishes it.
+    const stopped = await t.user(`/v1/runs/${ios.body.runId}/stop`, {});
+    expect(stopped.body.run.state).toBe("closing");
+    ghIos!.status = "completed";
+    ghIos!.conclusion = "cancelled";
+    await t.webhook(
+      "workflow_run",
+      workflowRun(ghIos, { status: "completed", conclusion: "cancelled" }),
+    );
+    expect(t.runRow(ios.body.runId)).toMatchObject({ state: "ended", end_reason: "stopped" });
+
+    // Deregister ends only the run that asked.
+    await t.runner("/v1/runs/deregister", {
+      ghRunId: ghIos!.id,
+      runId: ios.body.runId,
+      reason: "idle",
+    });
+    expect(t.runRow(replaced.body.runId).state).toBe("dispatching");
+    expect((await t.user("/v1/runs/current", undefined, "user-b")).body.run).toBeNull();
+  } finally {
+    await t.close();
+  }
+});
+
+test("legacy workflows run one platform at a time and repair upgrades them", async () => {
+  const t = await setup();
+  try {
+    await t.connectA();
+    t.github.state.files.set("main", LEGACY_WORKFLOW);
+    t.github.state.acceptsRunId = false;
+    const ios = await t.user("/v1/runs/ensure", { platform: "ios" });
+    expect(ios.status).toBe(200);
+    expect(ios.body.state).toBe("queued"); // bound by the legacy poll
+    expect(t.github.state.runs[0]!.inputs.simbox_run).toBeUndefined();
+    expect(t.runRow(ios.body.runId).gh_run_id).toBe(t.github.state.runs[0]!.id);
+
+    const android = await t.user("/v1/runs/ensure", { platform: "android" });
+    expect(android).toMatchObject({ status: 409, body: { error: "workflow_needs_repair" } });
+    expect(t.github.state.runs).toHaveLength(1);
+    expect((await t.user("/v1/repo/status")).body.repo.workflowVersion).toBe(1);
+
+    const doctor = await t.user("/v1/runners/doctor");
+    expect(doctor.body.checks.find((c: any) => c.name === "workflow")).toMatchObject({ ok: false });
+
+    // Repair commits the current workflow but keeps the runner token while a run is active.
+    const before = t.runRow(ios.body.runId);
+    const repaired = await t.user("/v1/repo/repair", {});
+    expect(repaired.body.repo).toMatchObject({ state: "ok", workflowVersion: 2 });
+    expect(t.github.state.files.get("main")).toBe(WORKFLOW_YAML);
+    expect(t.github.state.secrets.size).toBe(0);
+    expect(before.id).toBe(ios.body.runId);
+    expect((await t.user("/v1/runners/doctor")).body.checks.every((c: any) => c.ok)).toBe(true);
+
+    // Pre-runner-selection workflows never fall back to another runner.
+    t.github.state.rejectAllInputs = true;
+    const rejected = await t.user("/v1/runs/ensure", { new: true, platform: "ios" });
+    expect(rejected).toMatchObject({ status: 409, body: { error: "workflow_needs_repair" } });
+  } finally {
+    await t.close();
+  }
+});
+
+test("connect verifies push access and the installation; the workflow is editable around locked steps", async () => {
+  const t = await setup();
+  try {
+    const connect = { repo_id: 1, full_name: "owner/test", installation_id: 1 };
+    // user-b cannot push to owner/test.
+    t.github.state.pushAccess.set("gho-user-b", false);
+    expect((await t.user("/v1/repo/connect", connect, "user-b")).body.error).toBe("repo_forbidden");
+    // A wrong id for the name is refused, so the client cannot mix repositories.
+    expect((await t.user("/v1/repo/connect", { ...connect, repo_id: 2 })).body.error).toBe(
+      "repo_not_found",
+    );
+
+    t.github.state.files.delete("main");
+    t.github.state.protectedDefault = true;
+    const created = await t.user("/v1/repo/connect", connect);
+    expect(created.status).toBe(201);
+    expect(created.body.repo).toMatchObject({
+      state: "pending_pr",
+      fullName: "owner/test",
+      private: true,
+    });
+    expect(t.github.state.secrets.has("SIMBOX_TOKEN")).toBe(true);
+    t.github.mergeSetupPr();
+    expect((await t.user("/v1/repo/status")).body.repo).toMatchObject({
+      state: "ok",
+      prUrl: null,
+      workflowVersion: 2,
+    });
+
+    // Another account cannot take over the same repository.
+    t.github.state.pushAccess.set("gho-user-b", true);
+    expect((await t.user("/v1/repo/connect", connect, "user-b")).body.error).toBe("repo_in_use");
+
+    const shown = await t.user("/v1/workflow");
+    expect(shown.body.status).toBe("current");
+    const spec = insertStep(
+      defaultWorkflowSpec(),
+      { id: "build", name: "Build app", run: "npm ci && npm run build:ios", platform: "ios" },
+      { before: "start" },
+    );
+    // Removing a locked step is refused.
+    const broken = { ...spec, steps: spec.steps.filter((s: any) => s.simbox !== "serve") };
+    expect((await t.call("PUT", "/v1/workflow", { spec: broken })).body.error).toBe(
+      "invalid_workflow",
+    );
+
+    // Protected default branch: the edit waits in a PR, but runs keep working.
+    const saved = await t.call("PUT", "/v1/workflow", { spec });
+    expect(saved.status).toBe(200);
+    expect(saved.body).toMatchObject({ repoState: "ok", status: "drifted" });
+    expect(saved.body.prUrl).toContain("/pull/");
+    expect(saved.body.yaml).toBe(renderWorkflow(spec));
+    expect((await t.user("/v1/runs/ensure", { platform: "ios" })).status).toBe(200);
+    t.github.mergeSetupPr();
+    // Status checks GitHub at most once a minute.
+    expect((await t.user("/v1/repo/status")).body.repo.prUrl).not.toBeNull();
+    await t.env.KV.delete("repo_status_check:1");
+    expect((await t.user("/v1/repo/status")).body.repo.prUrl).toBeNull();
+    expect((await t.user("/v1/workflow")).body).toMatchObject({ status: "current", spec });
+
+    // Only people with push access may change workflow steps.
+    t.github.state.pushAccess.set("gho-user-a", false);
+    expect((await t.call("PUT", "/v1/workflow", { spec: defaultWorkflowSpec() })).status).toBe(403);
+
+    await t.user("/v1/repo/disconnect", {});
+    expect(t.github.state.cancelled).toHaveLength(1);
+    expect((await t.user("/v1/runners")).body.repository).toBeNull();
+  } finally {
+    await t.close();
+  }
+});
+
+test("an ensure that loses the insert race reports the winning run", async () => {
+  const t = await setup();
+  try {
+    await t.connectA();
+    // Another ensure inserts its run after this one read the active runs.
+    const get = t.env.KV.get.bind(t.env.KV);
+    let raced = false;
+    t.env.KV.get = (async (key: string, ...rest: unknown[]) => {
+      if (!raced && key.startsWith("inventory:")) {
+        raced = true;
+        await t.db.insert(schema.runs).values({
+          id: "winner",
+          user_id: "user-a",
+          repo_full_name: "owner/test",
+          gh_run_id: null,
+          state: "queued",
+          platform: "android",
+          created_at: Math.floor(Date.now() / 1000),
+        });
+      }
+      return (get as (...args: unknown[]) => unknown)(key, ...rest);
+    }) as typeof t.env.KV.get;
+    const result = await t.user("/v1/runs/ensure", {
+      platform: "android",
+      device: { model: "pixel_8" },
+    });
+    expect(raced).toBe(true);
+    expect(result.status).toBe(200);
+    expect(result.body.runId).toBe("winner");
+    expect(t.github.state.runs).toHaveLength(0);
+  } finally {
+    await t.close();
+  }
+});

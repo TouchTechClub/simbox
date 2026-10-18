@@ -8,11 +8,24 @@ type Run = typeof runCommand;
  * resolvers then cache for the zone's negative TTL (30 minutes on
  * Cloudflare), leaving the run unreachable from that machine. Authoritative
  * servers do not cache, so polling them is safe; the run's URL is registered
- * only afterwards. Resolves false if it never appeared within the deadline.
+ * only afterwards. Resolves "served" once every nameserver answers, "missing"
+ * if the record never appeared within the deadline, and "unverified" when the
+ * check itself cannot run (no `dig`, no nameservers) — never a run failure.
  */
 export async function waitForAuthoritativeDns(
   hostname: string,
   options: { timeoutMs?: number; pollMs?: number; graceMs?: number; run?: Run } = {},
+): Promise<"served" | "missing" | "unverified"> {
+  try {
+    return (await poll(hostname, options)) ? "served" : "missing";
+  } catch {
+    return "unverified";
+  }
+}
+
+async function poll(
+  hostname: string,
+  options: { timeoutMs?: number; pollMs?: number; graceMs?: number; run?: Run },
 ): Promise<boolean> {
   const run = options.run ?? runCommand;
   const zone = hostname.slice(hostname.indexOf(".") + 1);
@@ -21,7 +34,7 @@ export async function waitForAuthoritativeDns(
     .split("\n")
     .map((line) => line.trim().replace(/\.$/, ""))
     .filter((line) => /^[a-z0-9.-]+$/i.test(line));
-  if (ns.code !== 0 || servers.length === 0) return false;
+  if (ns.code !== 0 || servers.length === 0) throw new Error("no nameservers");
   const deadline = Date.now() + (options.timeoutMs ?? 90_000);
   while (Date.now() < deadline) {
     const answers = await Promise.all(

@@ -1,7 +1,6 @@
 import { rmSync } from "node:fs";
-import { clearCachedRun, writeCachedRun } from "./run-cache.js";
 import pc from "picocolors";
-import type { PublicRun, RepoStatusResponse } from "@simbox/shared";
+import type { DevicePlatform, PublicRun, RepoStatusResponse } from "@simbox/shared";
 import {
   parseRunnerInput,
   formatRunner,
@@ -9,14 +8,13 @@ import {
   validateDeviceProfile,
 } from "@simbox/shared";
 import {
+  activeRuns,
   CliError,
-  currentRun,
   ensureRun,
   me,
   pollDeviceToken,
   repairRepo,
   repoStatus,
-  runHistory,
   startDeviceFlow,
   stopRun,
 } from "./client.js";
@@ -24,8 +22,17 @@ import { authPath, saveToken, webBaseUrl } from "./config.js";
 import { connectFlow, type ConnectInfo } from "./connect.js";
 import { openInBrowser } from "./open.js";
 import { fmtCountdown, sleep, Spinner } from "./util.js";
-import { waitForRemote, waitForAndroid } from "./remote.js";
 import { registerDevice } from "./device-registration.js";
+import { clearCachedRun } from "./run-cache.js";
+import {
+  defaultRunsDeps,
+  PLATFORM_NAMES,
+  refreshPlatform,
+  targetPlatform,
+  waitForRemote,
+  waitForRun,
+  type RunsDeps,
+} from "./runs.js";
 
 // ---- login ----
 
@@ -147,97 +154,101 @@ function printRepoConnected(repo: {
 
 // ---- sim ----
 
-const SIM_TIMEOUT_MS = 25 * 60 * 1000;
-const SIM_POLL_MS = 3000;
+/** Queue + runner start + device boot on a warm image. */
+export const SIM_TIMEOUT_MS = 25 * 60 * 1000;
+/** A foldable or a pinned Xcode may first download a simulator runtime (up to ~30 min). */
+export const SIM_RUNTIME_TIMEOUT_MS = 45 * 60 * 1000;
 
-export async function cmdSim(opts: {
+export interface SimOptions {
   new?: boolean;
   json?: boolean;
-  platform?: "ios" | "android";
+  platform?: DevicePlatform;
   runner?: string;
+  device?: string;
+  os?: string;
   foldable?: boolean;
   xcode?: string;
-}): Promise<void> {
-  const json = opts.json === true;
-  const out = json ? process.stderr : process.stdout;
+}
 
+/** Validate sim flags before any API call; device and runner choices need a platform. */
+export function simRequest(opts: SimOptions) {
   if (opts.runner !== undefined && !opts.platform)
     throw new CliError("Use --platform ios or android with --runner.");
   const runner =
     opts.runner === undefined ? undefined : parseRunnerInput(opts.runner, opts.platform!);
-  const wantsDevice = opts.foldable === true || opts.xcode !== undefined;
-  if (wantsDevice && !opts.platform)
-    throw new CliError("Use --platform ios or android with --foldable or --xcode.");
+  const flags = [
+    opts.device !== undefined && "--device",
+    opts.os !== undefined && "--os",
+    opts.foldable === true && "--foldable",
+    opts.xcode !== undefined && "--xcode",
+  ].filter((flag): flag is string => typeof flag === "string");
+  if (flags.length && !opts.platform)
+    throw new CliError(`Use --platform ios or android with ${flags.join(", ")}.`);
   let device;
   try {
-    device = wantsDevice
-      ? (validateDeviceProfile({ foldable: opts.foldable, xcode: opts.xcode }, opts.platform!) ??
-        undefined)
+    device = flags.length
+      ? (validateDeviceProfile(
+          {
+            model: opts.device,
+            os: opts.os,
+            foldable: opts.foldable || undefined,
+            xcode: opts.xcode,
+          },
+          opts.platform!,
+        ) ?? undefined)
       : undefined;
   } catch (err) {
     throw new CliError((err as Error).message);
   }
-  const first = await ensureRun(opts.new === true, opts.platform, runner, device);
+  const timeoutMs =
+    opts.platform === "ios" && (device?.foldable || device?.xcode)
+      ? SIM_RUNTIME_TIMEOUT_MS
+      : SIM_TIMEOUT_MS;
+  return { platform: opts.platform, runner, device, timeoutMs };
+}
 
-  let info: ConnectInfo;
-  if (first.state === "live") {
-    info = {
-      runId: first.runId,
-      tunnelUrl: first.tunnelUrl,
-      daemonToken: first.daemonToken,
-      expiresAt: first.expiresAt,
-    };
-  } else {
-    const spinner = new Spinner(`Run ${first.state}`);
-    spinner.begin();
-    const deadline = Date.now() + SIM_TIMEOUT_MS;
-    let live: { run: PublicRun; tunnelUrl: string; daemonToken: string } | null = null;
+export function simTimeoutMessage(timeoutMs: number): string {
+  return `Run didn't come online within ${Math.round(timeoutMs / 60_000)} minutes. Check the workflow run in your repo's Actions tab, then try \`simbox sim\` again (or \`--new\`).`;
+}
 
-    while (Date.now() < deadline) {
-      await sleep(SIM_POLL_MS);
-      const run = await currentRun();
-      if (!run) {
-        const ended = (await runHistory()).find((candidate) => candidate.id === first.runId);
-        if (ended && (ended.state === "ended" || ended.state === "failed")) {
-          spinner.fail(`Run ${ended.state}`);
-          throw new CliError(
-            `The run ${ended.state} during startup (${ended.endReason ?? "check the Actions logs"}). Try \`simbox sim --new\`.`,
-          );
-        }
-        continue;
-      }
-      if (run.state === "live" && run.tunnelUrl && run.daemonToken) {
-        live = { run, tunnelUrl: run.tunnelUrl, daemonToken: run.daemonToken };
-        break;
-      }
-      if (run.state === "failed" || run.state === "ended" || run.state === "closing") {
-        spinner.fail(`Run ${run.state}`);
-        throw new CliError(
-          `The run ${run.state} before coming online (${run.endReason ?? "no reason given"}). Try \`simbox sim --new\`.`,
-        );
-      }
-      spinner.set(`Run ${run.state}`);
-    }
+export async function cmdSim(opts: SimOptions, deps: Partial<RunsDeps> = {}): Promise<void> {
+  const json = opts.json === true;
+  const all = { ...defaultRunsDeps, ...deps };
+  const request = simRequest(opts);
+  const first = await ensureRun(
+    opts.new === true,
+    request.platform,
+    request.runner,
+    request.device,
+  );
 
-    if (!live) {
-      spinner.fail("Timed out");
-      throw new CliError(
-        "Run didn't come online within 12 minutes. Check the workflow run in your repo's Actions tab, then try `simbox sim` again (or `--new`).",
-      );
-    }
-    spinner.succeed("Run is live");
-    info = {
-      runId: live.run.id,
-      tunnelUrl: live.tunnelUrl,
-      daemonToken: live.daemonToken,
-      expiresAt: live.run.expiresAt,
-    };
+  // Follow THE run ensure returned, by id: with two platforms active "the
+  // current run" may be the other one. Wait for live + devices ready.
+  const spinner = new Spinner(`Run ${first.state}`);
+  spinner.begin();
+  let ready: { run: PublicRun; info: ConnectInfo };
+  try {
+    ready = await waitForRun(first.runId, {
+      timeoutMs: request.timeoutMs,
+      timeoutMessage: simTimeoutMessage(request.timeoutMs),
+      onUpdate: (run) =>
+        spinner.set(
+          `${PLATFORM_NAMES[run.platform]} run ${run.state === "live" ? "live, waiting for devices" : run.state}`,
+        ),
+      deps: all,
+    });
+  } catch (err) {
+    spinner.fail("Run did not come online");
+    throw err;
   }
-
-  info = await waitForRemote(info);
-  if (opts.platform === "android") await waitForAndroid(info.runId);
-  writeCachedRun(info);
-  registerDevice(info, { platform: opts.platform });
+  spinner.succeed(`${PLATFORM_NAMES[ready.run.platform]} run is live`);
+  const { run } = ready;
+  const info = await waitForRemote(ready.info, {
+    probe: all.probe,
+    refresh: () => refreshPlatform(run.platform, all),
+  });
+  all.writeCache(run.platform, info);
+  registerDevice(info, { platform: run.platform });
 
   if (json) {
     const payload = {
@@ -245,73 +256,154 @@ export async function cmdSim(opts: {
       daemon_token: info.daemonToken,
       run_id: info.runId,
       expires_at: info.expiresAt,
+      platform: run.platform,
+      booted_device: run.bootedDevice ?? null,
     };
     process.stdout.write(JSON.stringify(payload) + "\n");
     return;
   }
 
-  out.write(
-    `Run ${pc.bold(info.runId)} is ${pc.green("live")}` +
+  process.stdout.write(
+    `${PLATFORM_NAMES[run.platform]} run ${pc.bold(info.runId)} is ${pc.green("live")}` +
       (info.expiresAt ? ` — expires in ${fmtCountdown(info.expiresAt)}` : "") +
       "\n\n",
   );
-  connectFlow(info, false);
+  connectFlow(info, { platform: run.platform, bootedDevice: run.bootedDevice });
 }
 
 // ---- ps ----
 
-export async function cmdPs(): Promise<void> {
-  const run = await currentRun();
-  if (!run) {
-    console.log(`No active run. Start one with ${pc.cyan("simbox sim")}.`);
-    return;
-  }
+function stateColor(state: string): (text: string) => string {
+  return state === "live" ? pc.green : state === "failed" ? pc.red : pc.yellow;
+}
 
-  const stateColor = run.state === "live" ? pc.green : run.state === "failed" ? pc.red : pc.yellow;
-  console.log(`${pc.bold("run")} ${run.id}`);
-  console.log(`  state:          ${stateColor(run.state)}`);
-  console.log(`  platform:       ${run.platform}`);
+export function printRun(run: PublicRun): void {
+  const booted = run.bootedDevice;
+  console.log(`${pc.bold(PLATFORM_NAMES[run.platform])} run ${run.id}`);
+  console.log(`  state:          ${stateColor(run.state)(run.state)}`);
   console.log(`  runner:         ${formatRunner(run.runner)}`);
-  console.log(`  device:         ${formatDeviceProfile(run.device ?? null, run.platform)}`);
-  console.log(`  gh_run_id:      ${run.ghRunId ?? pc.dim("pending")}`);
+  console.log(`  requested:      ${formatDeviceProfile(run.device ?? null, run.platform)}`);
+  console.log(
+    `  booted:         ${
+      booted
+        ? `${booted.name} (${run.platform === "ios" ? "iOS" : "API"} ${booted.os}${booted.id ? `, ${booted.id}` : ""})`
+        : pc.dim(run.devicesReady ? "unknown" : "not yet")
+    }`,
+  );
+  console.log(`  devices_ready:  ${run.devicesReady ? "yes" : "no"}`);
   console.log(`  active_devices: ${run.activeDevices}`);
-  console.log(`  android_ready:  ${run.androidReady ? "yes" : "no"}`);
+  console.log(`  gh_run_id:      ${run.ghRunId ?? pc.dim("pending")}`);
   console.log(`  expires:        ${run.expiresAt ? fmtCountdown(run.expiresAt) : pc.dim("n/a")}`);
   if (run.endReason) console.log(`  end_reason:     ${run.endReason}`);
 }
 
-// ---- stop ----
-
-export async function cmdStop(): Promise<void> {
-  const run = await currentRun();
-  if (!run) {
-    console.log("No active run to stop.");
+export async function cmdPs(opts: { json?: boolean } = {}): Promise<void> {
+  const runs = await activeRuns();
+  if (opts.json) {
+    console.log(JSON.stringify({ runs }));
     return;
   }
-  await stopRun(run.id);
-  clearCachedRun();
-  if (run.tunnelUrl && run.daemonToken)
-    registerDevice(
-      {
-        runId: run.id,
-        tunnelUrl: run.tunnelUrl,
-        daemonToken: run.daemonToken,
-        expiresAt: run.expiresAt,
-      },
-      { stop: true },
+  if (!runs.length) {
+    console.log(`No active runs. Start one with ${pc.cyan("simbox sim --platform ios|android")}.`);
+    return;
+  }
+  runs.forEach((run, i) => {
+    if (i) console.log("");
+    printRun(run);
+  });
+}
+
+// ---- stop ----
+
+export async function cmdStop(
+  opts: { platform?: DevicePlatform; all?: boolean } = {},
+): Promise<void> {
+  if (opts.all && opts.platform) throw new CliError("Use either --platform or --all, not both.");
+  const active = await activeRuns();
+  let targets: PublicRun[];
+  if (opts.all) targets = active;
+  else if (opts.platform) targets = active.filter((run) => run.platform === opts.platform);
+  else if (!active.length) targets = [];
+  else {
+    const platform = targetPlatform(
+      undefined,
+      active,
+      "Pass --platform ios|android to stop one, or --all to stop both.",
     );
-  console.log(`${pc.green("✔")} Stop requested for run ${pc.bold(run.id)}.`);
+    targets = active.filter((run) => run.platform === platform);
+  }
+  if (!targets.length) {
+    if (opts.platform) clearCachedRun(opts.platform);
+    console.log(
+      opts.platform
+        ? `No active ${PLATFORM_NAMES[opts.platform]} run to stop.`
+        : "No active run to stop.",
+    );
+    return;
+  }
+  for (const run of targets) {
+    await stopRun(run.id);
+    clearCachedRun(run.platform);
+    if (run.tunnelUrl && run.daemonToken)
+      registerDevice(
+        {
+          runId: run.id,
+          tunnelUrl: run.tunnelUrl,
+          daemonToken: run.daemonToken,
+          expiresAt: run.expiresAt,
+        },
+        { stop: true, platform: run.platform },
+      );
+    console.log(
+      `${pc.green("✔")} Stop requested for the ${PLATFORM_NAMES[run.platform]} run ${pc.bold(run.id)}.`,
+    );
+  }
 }
 
 // ---- repair ----
 
+export function printRepoStatus(status: RepoStatusResponse): void {
+  const repo = status.repo;
+  if (!status.connected || !repo) {
+    console.log(`No repo connected. Run ${pc.cyan("simbox init")}.`);
+    return;
+  }
+  const color = repo.state === "ok" ? pc.green : pc.yellow;
+  console.log(
+    `Repo ${pc.bold(repo.fullName)}: ${color(repo.state)}${repo.workflowVersion ? pc.dim(` (workflow v${repo.workflowVersion})`) : ""}`,
+  );
+  if (repo.state === "pending_pr")
+    console.log(
+      repo.prUrl
+        ? `The default branch is protected — merge ${pc.underline(repo.prUrl)} to apply the workflow.`
+        : "The default branch is protected — merge the Simbox pull request to apply the workflow.",
+    );
+  else if (repo.state === "ok" && repo.prUrl)
+    console.log(
+      `The default branch is protected — merge ${pc.underline(repo.prUrl)} to apply the update. The current workflow keeps working meanwhile.`,
+    );
+  else if (repo.state === "ok")
+    console.log(
+      "Workflow up to date and installation verified (the repo secret rotates only while no run is active).",
+    );
+  else if (repo.state === "needs_repair")
+    console.log("The repo still needs repair; check the GitHub App installation and permissions.");
+  else if (repo.state === "uninstalled")
+    console.log(`The GitHub App is not installed. Run ${pc.cyan("simbox init")}.`);
+}
+
 export async function cmdRepair(): Promise<void> {
   const spinner = new Spinner("Repairing repo");
   spinner.begin();
-  const res = await repairRepo();
+  let status: RepoStatusResponse;
+  try {
+    status = await repairRepo();
+  } catch (err) {
+    spinner.fail("Repair failed");
+    throw err;
+  }
   spinner.succeed("Repair complete");
-  if (res.message) console.log(res.message);
-  else console.log("Workflow re-committed, secret rotated, installation verified.");
+  printRepoStatus(status);
 }
 
 // ---- logout ----

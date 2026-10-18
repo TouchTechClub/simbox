@@ -1,6 +1,13 @@
 import { sql } from "drizzle-orm";
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
-import type { DeviceProfile, RepoState, RunState, RunnerTarget } from "@simbox/shared";
+import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import type {
+  BootedDevice,
+  DeviceProfile,
+  RepoState,
+  RunState,
+  RunnerTarget,
+  WorkflowSpec,
+} from "@simbox/shared";
 import { user } from "./auth";
 
 /**
@@ -15,13 +22,18 @@ export const installations = sqliteTable("installations", {
   created_at: integer("created_at").notNull(),
 });
 
-/** Account defaults survive repository disconnects; null means GitHub default. */
+/**
+ * Account defaults survive repository disconnects; null means GitHub default
+ * (runners) or the runner's own default device (devices).
+ */
 export const runnerSettings = sqliteTable("runner_settings", {
   user_id: text("user_id")
     .primaryKey()
     .references(() => user.id, { onDelete: "cascade" }),
   ios_runner: text("ios_runner", { mode: "json" }).$type<RunnerTarget>(),
   android_runner: text("android_runner", { mode: "json" }).$type<RunnerTarget>(),
+  ios_device: text("ios_device", { mode: "json" }).$type<DeviceProfile>(),
+  android_device: text("android_device", { mode: "json" }).$type<DeviceProfile>(),
 });
 
 export const repos = sqliteTable(
@@ -40,6 +52,12 @@ export const repos = sqliteTable(
     simbox_token_hash: text("simbox_token_hash"),
     ios_runner: text("ios_runner", { mode: "json" }).$type<RunnerTarget>(),
     android_runner: text("android_runner", { mode: "json" }).$type<RunnerTarget>(),
+    ios_device: text("ios_device", { mode: "json" }).$type<DeviceProfile>(),
+    android_device: text("android_device", { mode: "json" }).$type<DeviceProfile>(),
+    // User steps around the locked Simbox steps; null is the default workflow.
+    workflow: text("workflow", { mode: "json" }).$type<WorkflowSpec>(),
+    // Schema version of the committed workflow file (1 = before simbox_run).
+    workflow_version: integer("workflow_version").notNull().default(1),
     created_at: integer("created_at").notNull(),
   },
   (table) => [index("idx_repos_token_hash").on(table.simbox_token_hash)],
@@ -59,6 +77,8 @@ export const runs = sqliteTable(
     runner: text("runner", { mode: "json" }).$type<RunnerTarget>(),
     // Device beyond the platform default (foldable, Xcode); null for defaults.
     device: text("device", { mode: "json" }).$type<DeviceProfile>(),
+    // What the runner reported booting; null until it reports.
+    booted_device: text("booted_device", { mode: "json" }).$type<BootedDevice>(),
     tunnel_url: text("tunnel_url"),
     daemon_token: text("daemon_token"),
     // Named Cloudflare tunnel provisioned for this run; null for quick tunnels
@@ -68,6 +88,8 @@ export const runs = sqliteTable(
     tunnel_dns_record_id: text("tunnel_dns_record_id"),
     active_devices: integer("active_devices").notNull().default(0),
     android_ready: integer("android_ready").notNull().default(0),
+    /** Agents that report readiness for both platforms; null for older agents. */
+    devices_ready: integer("devices_ready"),
     created_at: integer("created_at").notNull(),
     dispatched_at: integer("dispatched_at"),
     live_at: integer("live_at"),
@@ -75,5 +97,12 @@ export const runs = sqliteTable(
     expires_at: integer("expires_at"),
     end_reason: text("end_reason"),
   },
-  (table) => [index("idx_runs_user_created").on(table.user_id, sql`${table.created_at} desc`)],
+  (table) => [
+    index("idx_runs_user_created").on(table.user_id, sql`${table.created_at} desc`),
+    // One starting-or-live run per platform; the database settles racing ensures.
+    // "closing" is excluded so a replacement can start while the old run winds down.
+    uniqueIndex("uniq_runs_active_platform")
+      .on(table.user_id, table.platform)
+      .where(sql`${table.state} in ('dispatching', 'queued', 'booting', 'live')`),
+  ],
 );

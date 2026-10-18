@@ -1,13 +1,32 @@
+import {
+  mergeDeviceProfiles,
+  validateDeviceProfile,
+  type DeviceProfile,
+  type DevicePreferences,
+} from "./device-profile.js";
+
 export type DevicePlatform = "ios" | "android";
+export const PLATFORMS: readonly DevicePlatform[] = ["ios", "android"];
 export type RunnerTarget = { labels: string[] };
 export type RunnerPreferences = Record<DevicePlatform, RunnerTarget | null>;
 export type RunnerSource = "override" | "repository" | "account" | "default";
 export type ResolvedRunner = { runner: RunnerTarget; source: RunnerSource };
+export interface LayeredDevice {
+  device: DeviceProfile | null;
+  /** Which layer supplied each field that is set. */
+  sources: Partial<Record<"model" | "os" | "foldable" | "xcode", RunnerSource>>;
+}
 export interface RunnerSettings {
   account: RunnerPreferences;
   repository: RunnerPreferences | null;
   repoFullName: string | null;
   effective: Record<DevicePlatform, ResolvedRunner>;
+  /** Device defaults, layered like runners but field by field. */
+  devices: {
+    account: DevicePreferences;
+    repository: DevicePreferences | null;
+    effective: Record<DevicePlatform, LayeredDevice>;
+  };
 }
 
 export interface RunnerDiagnostics {
@@ -147,6 +166,36 @@ export function resolveRunner(
   if (account[platform])
     return { runner: validateRunner(account[platform], platform), source: "account" };
   return { runner: DEFAULT_RUNNERS[platform], source: "default" };
+}
+
+/** Field-wise device layering: override → repository → account → runner default. */
+export function resolveDevice(
+  platform: DevicePlatform,
+  account: DevicePreferences,
+  repository: DevicePreferences | null,
+  override?: DeviceProfile | null,
+): LayeredDevice {
+  const layers: Array<[RunnerSource, DeviceProfile | null]> = [
+    ["account", account[platform] ? validateDeviceProfile(account[platform], platform) : null],
+    [
+      "repository",
+      repository?.[platform] ? validateDeviceProfile(repository[platform], platform) : null,
+    ],
+    ["override", override ? validateDeviceProfile(override, platform) : null],
+  ];
+  let device: DeviceProfile | null = null;
+  const sources: LayeredDevice["sources"] = {};
+  for (const [source, layer] of layers) {
+    if (!layer) continue;
+    device = mergeDeviceProfiles(device, layer);
+    if (layer.model !== undefined || layer.foldable) {
+      delete sources.model;
+      delete sources.foldable;
+    }
+    for (const key of ["model", "os", "foldable", "xcode"] as const)
+      if (layer[key] !== undefined) sources[key] = source;
+  }
+  return { device, sources };
 }
 
 export function sameRunner(a: RunnerTarget | null, b: RunnerTarget): boolean {

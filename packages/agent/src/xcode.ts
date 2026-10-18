@@ -1,39 +1,36 @@
 import { readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { compareVersions } from "@simbox/shared";
 import { run } from "./proc.js";
 import { info, warn } from "./log.js";
 
+type Run = typeof run;
+
 const APPLICATIONS = "/Applications";
 
-interface Runtime {
+export interface Runtime {
   identifier: string;
   version: string;
+  name?: string;
   platform?: string;
   isAvailable?: boolean;
   supportedDeviceTypes?: Array<{ identifier: string; name: string }>;
 }
 
-interface DeviceType {
+export interface DeviceType {
   identifier: string;
   name: string;
+  productFamily?: string;
+  minRuntimeVersion?: number;
 }
 
 interface Simulator {
   name: string;
   udid: string;
+  state?: string;
   deviceTypeIdentifier?: string;
   isAvailable?: boolean;
-}
-
-export function compareVersions(a: string, b: string): number {
-  const left = a.split(".").map(Number);
-  const right = b.split(".").map(Number);
-  for (let i = 0; i < Math.max(left.length, right.length); i++) {
-    const diff = (left[i] ?? 0) - (right[i] ?? 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
 }
 
 /**
@@ -61,10 +58,26 @@ export function rankXcodeBundles(names: string[]): string[] {
     .map((entry) => entry.name);
 }
 
+/** Installed release Xcode versions, newest first (what `--xcode` can select). */
+export function xcodeVersions(names: string[]): string[] {
+  const versions = rankXcodeBundles(names)
+    .map((name) => /^Xcode[_-](\d+(?:\.\d+)*)\.app$/.exec(name)?.[1])
+    .filter((version) => version !== undefined);
+  return [...new Set(versions)];
+}
+
+export async function installedXcodeVersions(): Promise<string[]> {
+  return xcodeVersions(await readdir(APPLICATIONS).catch(() => []));
+}
+
 const developerDir = (app: string) => join(APPLICATIONS, app, "Contents", "Developer");
 
-async function simctlJson<T>(args: string[], developer?: string): Promise<T> {
-  const result = await run(["xcrun", "simctl", "list", ...args, "-j"], {
+export async function simctlJson<T>(
+  args: string[],
+  developer?: string,
+  exec: Run = run,
+): Promise<T> {
+  const result = await exec(["xcrun", "simctl", "list", ...args, "-j"], {
     timeoutMs: 120_000,
     ...(developer ? { env: { DEVELOPER_DIR: developer } } : {}),
   });
@@ -73,10 +86,15 @@ async function simctlJson<T>(args: string[], developer?: string): Promise<T> {
   return JSON.parse(result.stdout) as T;
 }
 
-const isFoldableType = (type: DeviceType) =>
+export const isFoldableType = (type: DeviceType) =>
   type.name.startsWith("iPhone") && /\bDuo\b/.test(type.name);
 
 /** The iPhone Duo device type and the newest available iOS runtime that can run it. */
+export const isIOSRuntime = (runtime: Runtime) =>
+  runtime.isAvailable !== false &&
+  (runtime.platform ?? "iOS") === "iOS" &&
+  runtime.identifier.includes(".iOS-");
+
 export function foldableTarget(
   deviceTypes: DeviceType[],
   runtimes: Runtime[],
@@ -88,9 +106,7 @@ export function foldableTarget(
     const runtime = runtimes
       .filter(
         (candidate) =>
-          candidate.isAvailable !== false &&
-          (candidate.platform ?? "iOS") === "iOS" &&
-          candidate.identifier.includes(".iOS-") &&
+          isIOSRuntime(candidate) &&
           (candidate.supportedDeviceTypes ?? []).some(
             (supported) => supported.identifier === type.identifier,
           ),
@@ -183,43 +199,37 @@ export async function selectXcode(options: { version?: string; foldable: boolean
 }
 
 /**
- * The iPhone Duo to boot: an existing one on the newest runtime that supports
- * it, else one created in the default device set (fold refuses custom sets).
+ * A simulator of this type on this runtime: an available one is reused, else
+ * one is created in the default device set (agent-device's `fold` refuses
+ * custom sets, and the default set is where clients look for devices).
  */
-export async function ensureFoldableSimulator(): Promise<string> {
-  const [{ devicetypes }, { runtimes }] = await Promise.all([
-    simctlJson<{ devicetypes: DeviceType[] }>(["devicetypes"]),
-    simctlJson<{ runtimes: Runtime[] }>(["runtimes"]),
-  ]);
-  const target = foldableTarget(devicetypes, runtimes);
-  if (!target)
-    throw new Error(
-      "this Xcode has no iOS runtime that can run an iPhone Duo; use Xcode 27.1 or later",
-    );
-  const { devices } = await simctlJson<{ devices: Record<string, Simulator[]> }>([
-    "devices",
-    "available",
-  ]);
-  const existing = (devices[target.runtime.identifier] ?? []).find(
-    (device) => device.deviceTypeIdentifier === target.type.identifier && !!device.udid,
+export async function ensureSimulator(
+  type: { identifier: string; name: string },
+  runtime: { identifier: string; version: string },
+  exec: Run = run,
+): Promise<string> {
+  const { devices } = await simctlJson<{ devices: Record<string, Simulator[]> }>(
+    ["devices", "available"],
+    undefined,
+    exec,
   );
+  const matching = (devices[runtime.identifier] ?? []).filter(
+    (device) =>
+      device.deviceTypeIdentifier === type.identifier &&
+      device.isAvailable !== false &&
+      !!device.udid,
+  );
+  const existing = matching.find((device) => device.state === "Booted") ?? matching[0];
   if (existing) return existing.udid;
-  const created = await run(
-    [
-      "xcrun",
-      "simctl",
-      "create",
-      target.type.name,
-      target.type.identifier,
-      target.runtime.identifier,
-    ],
+  const created = await exec(
+    ["xcrun", "simctl", "create", type.name, type.identifier, runtime.identifier],
     { timeoutMs: 120_000 },
   );
   const udid = created.stdout.trim();
   if (created.code !== 0 || !/^[0-9A-F-]{36}$/i.test(udid))
     throw new Error(
-      `could not create ${target.type.name} on iOS ${target.runtime.version}: ${created.stderr.trim().slice(-300)}`,
+      `could not create ${type.name} on iOS ${runtime.version}: ${created.stderr.trim().slice(-300)}`,
     );
-  info(`created ${target.type.name} on iOS ${target.runtime.version}`);
+  info(`created ${type.name} on iOS ${runtime.version}`);
   return udid;
 }

@@ -18,7 +18,7 @@ test("a named hostname is registered only once every zone nameserver serves it",
     pollMs: 1,
     graceMs: 1,
   });
-  expect(ok).toBe(true);
+  expect(ok).toBe("served");
   expect(calls[0]).toEqual(["dig", "+short", "NS", "simboxtouchtech.dpdns.org"]);
   const queries = calls.filter((cmd) => cmd.includes("+norecurse"));
   expect(queries).toHaveLength(4);
@@ -27,7 +27,7 @@ test("a named hostname is registered only once every zone nameserver serves it",
   );
 });
 
-test("a hostname that never appears, or a zone with no nameservers, is reported", async () => {
+test("a hostname that never appears is reported; an unrunnable check is unverified, never fatal", async () => {
   const never = (async (cmd: string[]) =>
     cmd.includes("NS") ? result("hal.ns.cloudflare.com.\n") : result("")) as never;
   expect(
@@ -37,7 +37,11 @@ test("a hostname that never appears, or a zone with no nameservers, is reported"
       pollMs: 5,
       graceMs: 1,
     }),
-  ).toBe(false);
+  ).toBe("missing");
   const noZone = (async () => result("", 9)) as never;
-  expect(await waitForAuthoritativeDns("r-x.example.org", { run: noZone })).toBe(false);
+  expect(await waitForAuthoritativeDns("r-x.example.org", { run: noZone })).toBe("unverified");
+  const noDig = (async () => {
+    throw Object.assign(new Error("spawn dig ENOENT"), { code: "ENOENT" });
+  }) as never;
+  expect(await waitForAuthoritativeDns("r-x.example.org", { run: noDig })).toBe("unverified");
 });

@@ -1,5 +1,7 @@
+import type { BootedDevice, DeviceCatalog, RunnerInventory } from "./device-catalog.js";
 import type { DeviceProfile } from "./device-profile.js";
-import type { RunnerTarget } from "./runners.js";
+import type { DevicePlatform, RunnerTarget } from "./runners.js";
+import type { WorkflowSpec, WorkflowStatus } from "./workflow.js";
 
 /** Run lifecycle states (D1 `runs.state`). */
 export type RunState =
@@ -35,6 +37,8 @@ export interface Repo {
   state: RepoState;
   prUrl: string | null;
   createdAt: number;
+  /** Schema version of the committed workflow; below 2 cannot run iOS and Android at once. */
+  workflowVersion: number;
 }
 
 /** Run shape returned to authenticated users (their own tokens are included). */
@@ -44,14 +48,24 @@ export interface PublicRun {
   state: RunState;
   platform: "ios" | "android";
   runner: RunnerTarget | null;
+  /** What was requested after layering defaults. */
   device: DeviceProfile | null;
+  /** What the runner actually booted, once it reports it. */
+  bootedDevice: BootedDevice | null;
   tunnelUrl: string | null;
   daemonToken: string | null;
   activeDevices: number;
   androidReady: boolean;
+  /** The run's devices are booted and accept commands. */
+  devicesReady: boolean;
   createdAt: number;
   expiresAt: number | null;
   endReason: string | null;
+}
+
+/** GET /v1/runs/active — at most one active run per platform. */
+export interface ActiveRunsResponse {
+  runs: PublicRun[];
 }
 
 /** Thin public run shape for lists/history — no secrets. */
@@ -62,6 +76,7 @@ export interface RunSummary {
   platform: "ios" | "android";
   runner: RunnerTarget | null;
   device: DeviceProfile | null;
+  bootedDevice: BootedDevice | null;
   activeDevices: number;
   createdAt: number;
   endedAt: number | null;
@@ -71,7 +86,9 @@ export interface RunSummary {
 // ---- API contracts ----
 
 export interface EnsureRunRequest {
+  /** Replace this platform's active run instead of reusing it. */
   new?: boolean;
+  /** Omitted: reuse the only active run, else start iOS. */
   platform?: "ios" | "android";
   runner?: RunnerTarget;
   device?: DeviceProfile;
@@ -88,6 +105,9 @@ export type EnsureRunResponse =
     }
   | { state: "dispatching" | "queued" | "booting"; runId: string };
 
+// Runner-authenticated requests carry the run id Simbox dispatched
+// (`simbox_run` workflow input). Older agents send only ghRunId.
+
 // Auth/device-flow types are owned by better-auth (RFC 8628 shapes) —
 // clients use the standard endpoints under /api/auth/*.
 
@@ -98,6 +118,7 @@ export interface RepoStatusResponse {
 
 export interface RunRegisterRequest {
   ghRunId: number;
+  runId?: string;
   tunnelUrl: string;
   daemonToken: string;
   versions: {
@@ -110,16 +131,44 @@ export interface RunRegisterRequest {
 
 export interface RunTunnelRequest {
   ghRunId: number;
+  runId?: string;
 }
 
 export interface RunConfigRequest {
   ghRunId: number;
+  runId?: string;
 }
 
 /** What the runner should prepare, as requested when the run was dispatched. */
 export interface RunConfigResponse {
   platform: "ios" | "android";
   device: DeviceProfile | null;
+  runId?: string;
+}
+
+/** POST /v1/runs/inventory — what the runner offers and what it booted. */
+export interface RunInventoryRequest {
+  ghRunId: number;
+  runId?: string;
+  catalog: DeviceCatalog;
+  booted?: BootedDevice;
+}
+
+/** GET /v1/inventory?platform=&runner= — the last catalog reported for a runner. */
+export interface InventoryResponse {
+  platform: DevicePlatform;
+  runner: RunnerTarget;
+  inventory: RunnerInventory | null;
+}
+
+/** GET/PUT /v1/workflow */
+export interface WorkflowResponse {
+  spec: WorkflowSpec;
+  yaml: string;
+  /** Committed file vs. the rendered spec; null when GitHub could not be read. */
+  status: WorkflowStatus | null;
+  repoState: RepoState;
+  prUrl: string | null;
 }
 
 /** A named Cloudflare tunnel for one run: stable URL, several edge connections. */
@@ -131,12 +180,16 @@ export interface RunTunnelResponse {
 
 export interface RunHeartbeatRequest {
   ghRunId: number;
+  runId?: string;
   activeDevices: number;
   androidReady: boolean;
+  /** Newer agents: the run's devices are booted (iOS or Android). */
+  devicesReady?: boolean;
 }
 
 export interface RunDeregisterRequest {
   ghRunId: number;
+  runId?: string;
   reason?: string;
 }
 

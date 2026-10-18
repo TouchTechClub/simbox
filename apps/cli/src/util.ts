@@ -26,6 +26,17 @@ export function fmtCountdown(expiresAt: number): string {
   return `${sec}s`;
 }
 
+/** "3 hours ago" from epoch ms (epoch seconds are accepted too). */
+export function fmtAgo(at: number, now = Date.now()): string {
+  const ms = now - (at < 1e12 ? at * 1000 : at);
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const unit = (n: number, name: string) => `${n} ${name}${n === 1 ? "" : "s"} ago`;
+  if (s < 60) return "just now";
+  if (s < 3600) return unit(Math.floor(s / 60), "minute");
+  if (s < 86_400) return unit(Math.floor(s / 3600), "hour");
+  return unit(Math.floor(s / 86_400), "day");
+}
+
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /**

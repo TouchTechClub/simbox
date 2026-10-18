@@ -1,4 +1,4 @@
-# Runners and agent setup
+# Runners, devices, workflow and agent setup
 
 ## Runner defaults and overrides
 
@@ -28,18 +28,25 @@ survive repository disconnects. Repository overrides are attached to the current
 connected repository; this release does not add multiple simultaneous repositories.
 Repair updates the workflow/secret without clearing either settings layer.
 
-Settings never migrate an active run. Plain `sim` reuses that run even if defaults
-have changed; an explicitly different platform or runner is rejected unless
-`--new` is requested. History and `ps` record the selected runner, not a newly
-resolved default. Historical runs without recorded labels are marked unknown.
+Each platform has at most one active run, and the iOS and Android runs are
+independent. Settings never migrate an active run. Plain `sim` reuses the only
+active run (otherwise iOS); `sim --platform <p>` reuses that platform's run even if
+defaults have changed. An explicitly different runner or device is rejected unless
+`--new` is requested, which replaces only that platform's run. History and `ps`
+record the selected runner and device, not a newly resolved default. Historical
+runs without recorded labels are marked unknown.
 
 ### Workflow upgrade
 
-Run `simbox repair` **once after upgrading** to install the new `runner_labels`
-workflow input; merge the generated PR if the default branch is protected.
-The API always dispatches the exact labels selected for the run. Old workflows
-return an actionable repair error rather than silently ignoring your selection.
-Manual Actions dispatch can leave `runner_labels` empty to use the platform default.
+Run `simbox repair` **once after upgrading** to install the current workflow
+(`runner_labels` and `simbox_run` inputs, staged steps); merge the generated PR if
+the default branch is protected. Repair re-renders your saved steps, and rotates
+`SIMBOX_TOKEN` only when no run is active. The API always dispatches the exact
+labels selected for the run and passes the run id as `simbox_run`, which appears
+in the Actions run name. Older workflows without `simbox_run` still work, one
+platform at a time: starting the other platform returns a repair error rather
+than guessing which job is which. Manual Actions dispatch can leave
+`runner_labels` and `simbox_run` empty to use the platform default.
 
 ### Providers and custom runners
 
@@ -65,11 +72,69 @@ Manual Actions dispatch can leave `runner_labels` empty to use the platform defa
 `simbox doctor` checks local tools, configuration and the installed workflow
 without starting a paid job; actual KVM/Xcode capability is checked on the runner.
 
+## Devices and OS versions
+
+`--device` picks a simulator or emulator model and `--os` its version: an iOS
+runtime (`18.4`, or `18` for the newest 18.x), an Android API level (`35`), or
+`latest`/`oldest`. Both require `--platform`.
+
+```bash
+simbox devices list                      # both platforms, effective runners
+simbox devices list --platform android --runner blacksmith-4vcpu-ubuntu-2404
+simbox sim --new --platform ios --device "iPhone 16 Pro" --os 18.4
+simbox sim --new --platform android --device pixel_8 --os latest
+simbox devices set ios --device "iPhone 16 Pro" --scope account
+simbox devices set ios --os 18 --scope repo   # keeps the account's model
+simbox devices reset ios --scope repo         # inherit the account default
+```
+
+`devices list` shows the catalog a runner last reported (models, OS versions,
+Xcode versions). Each run reports it, so a runner has no catalog until its first
+run in your repository. The API checks a requested device against that catalog
+and rejects an unavailable model/OS/Xcode with the runner's options before
+dispatching; without a catalog the runner checks it and fails its start step
+with the same list.
+
+Defaults layer like runners — CLI flag → repository → account → runner default —
+but **field by field**: a repository OS keeps the account's model and vice versa.
+A model and `--foldable` are alternatives; the higher layer wins. Xcode is chosen
+per run with `--xcode`, never as a default. `runners show` prints the effective
+defaults; `ps` prints each run's requested and booted device.
+
+## Workflow steps
+
+`.github/workflows/simbox.yml` is rendered from a list of steps. Three are locked
+and always run in order: **prepare** (check the runner, download the agent),
+**start** (boot the devices; nothing is reachable yet) and **serve** (open the
+tunnel and serve until the run ends). Your steps can go before `start` (checkout,
+build), between `start` and `serve` (install apps, seed data on the booted
+device) or after `serve` (runs once the session ends).
+
+```bash
+simbox workflow show                     # --yaml for the rendered file
+simbox workflow add --name Checkout --uses actions/checkout@v4
+simbox workflow add --name "Install app" --run "./scripts/install.sh" \
+  --platform android --after start
+simbox workflow move install-app --before serve
+simbox workflow remove install-app
+simbox workflow edit                     # all steps as JSON in $VISUAL/$EDITOR
+simbox workflow apply steps.json         # {steps, permissions?}
+```
+
+`add` defaults to before `start`; `--platform` limits a step to one platform and
+`--if`, `--env`, `--with` (for `--uses`) work as in GitHub Actions. Edits are also
+available in the dashboard. Steps run with the repository's secrets, so saving
+requires push access to the repository. A save commits to the default branch, or
+opens/updates a `simbox-setup` PR when it is protected; the repository stays
+usable with the committed workflow while the change is pending. Direct edits to
+the file on GitHub are replaced the next time Simbox saves or repairs it.
+
 ## Foldables
 
-`--foldable` prepares a foldable device instead of the default phone; `--xcode`
-selects an installed Xcode before the device daemon starts. Both require
-`--platform` and are fixed for the life of a run, so changing them needs `--new`.
+`--foldable` prepares a foldable device instead of the default phone (it can
+also be a default: `simbox devices set <platform> --foldable`); `--xcode` selects
+an installed Xcode before the device daemon starts. Both require `--platform` and
+are fixed for the life of a run, so changing them needs `--new`.
 
 ```bash
 simbox sim --new --platform ios --runner xcode-27 --xcode 27.1 --foldable
@@ -96,8 +161,9 @@ simbox exec fold closed      # or half-open / open
 
 ## Small agent skill
 
-The skill lives at `skills/simbox/SKILL.md`. It covers setup, runner selection,
-app smoke tests, credential hygiene, uncertain-outcome recovery and cleanup.
+The skill lives at `skills/simbox/SKILL.md`. It covers setup, runner and device
+selection, concurrent iOS/Android runs, workflow steps, app smoke tests,
+credential hygiene, uncertain-outcome recovery and cleanup.
 It complements—not duplicates—the agent-device command documentation.
 
 ```bash
@@ -127,10 +193,11 @@ verification. Landing-page work remains outside this release's scope.
 
 ## Release checklist
 
-Apply the included `runner_settings` / repository override / run-label D1
-migration before deploying the API. Publish the updated runner action from
-`action-src/action.yml.template` through the normal release pipeline (the rendered
-`action.yml` and binary checksums are release-generated), publish the CLI, and
-deploy the dashboard/API together. Push `skills/simbox` to the public repository
-before testing the GitHub-based install command. Then repair older connected
-workflows and verify actual GitHub/Blacksmith runs on accounts with provider access.
+Publish the updated runner action from `action-src/action.yml.template` through
+the normal release pipeline (the rendered `action.yml` and binary checksums are
+release-generated) **before** deploying an API that commits staged workflows, then
+publish the CLI and deploy the dashboard/API together; the D1 migration applies
+before the Worker (see [release order](DEPLOY.md#release-order)). Push
+`skills/simbox` to the public repository before testing the GitHub-based install
+command. Then repair older connected workflows and verify actual GitHub/Blacksmith
+runs, including concurrent iOS and Android runs, on accounts with provider access.

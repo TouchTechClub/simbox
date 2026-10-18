@@ -1,36 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
-import { remoteArgs, shouldReplay, waitForRemote, waitForAndroid } from "../apps/cli/src/remote.js";
 import { healthyProxy } from "../packages/agent/src/health.js";
 import { startGateway } from "../packages/agent/src/gateway.js";
 import { sessionDeviceCount } from "../packages/agent/src/devices.js";
 import { selectWarmSimulator } from "../packages/agent/src/ios.js";
-import { preparePlatforms } from "../packages/agent/src/platforms.js";
-import { androidSystemImage, androidDirectories } from "../packages/agent/src/provision.js";
-import { WORKFLOW_YAML } from "../packages/shared/src/constants.js";
+import { hostMismatch, hostPlatform } from "../packages/agent/src/platform.js";
+import { androidSystemImage, androidDirectories } from "../packages/agent/src/android.js";
+import { WORKFLOW_YAML } from "../packages/shared/src/workflow.js";
 import { dispatchWorkflow } from "../apps/api/src/github.js";
 
-const info = {
-  runId: "run-1",
-  tunnelUrl: "https://old.example",
-  daemonToken: "secret",
-  expiresAt: null,
-};
-
-test("default Android preparation never invokes iOS inventory", async () => {
-  let android = false;
-  await preparePlatforms({
-    warmIOS: false,
-    ios: async () => {
-      throw new Error("iOS must not run");
-    },
-    android: async () => {
-      android = true;
-    },
-    warn: () => {},
-  });
-  expect(android).toBe(true);
+test("a run prepares its own platform and fails on a host that cannot run it", () => {
+  expect(hostPlatform("darwin")).toBe("ios");
+  expect(hostPlatform("linux")).toBe("android");
+  expect(hostPlatform("darwin", "android")).toBe("android");
+  expect(hostMismatch("ios", "darwin")).toBeNull();
+  expect(hostMismatch("android", "linux")).toBeNull();
+  expect(hostMismatch("ios", "linux")).toContain("macOS");
+  expect(hostMismatch("android", "darwin")).toContain("Linux x64");
 });
 
 test("Android uses the host ABI and platform-aware workflow selects runner label arrays", () => {
@@ -65,14 +52,25 @@ test("workflow dispatch always carries platform and exact runner labels", async 
     return new Response(null, { status: 204 });
   }) as typeof fetch;
   try {
-    await dispatchWorkflow("test", "owner/repo", "main", "android");
-    await dispatchWorkflow("test", "owner/repo", "main");
-    await dispatchWorkflow("test", "owner/repo", "main", "android", {
-      labels: ["self-hosted", "linux", "x64", "kvm"],
+    await dispatchWorkflow("test", "owner/repo", "main", { platform: "android" });
+    await dispatchWorkflow("test", "owner/repo", "main", {
+      platform: "ios",
+      simboxRun: "0b8f3c1e-8a4e-4d7c-9a51-3f0e8b2f6a10",
+    });
+    await dispatchWorkflow("test", "owner/repo", "main", {
+      platform: "android",
+      runner: { labels: ["self-hosted", "linux", "x64", "kvm"] },
     });
     expect(bodies).toEqual([
       { ref: "main", inputs: { platform: "android", runner_labels: '["ubuntu-latest"]' } },
-      { ref: "main", inputs: { platform: "ios", runner_labels: '["macos-latest"]' } },
+      {
+        ref: "main",
+        inputs: {
+          platform: "ios",
+          runner_labels: '["macos-latest"]',
+          simbox_run: "0b8f3c1e-8a4e-4d7c-9a51-3f0e8b2f6a10",
+        },
+      },
       {
         ref: "main",
         inputs: { platform: "android", runner_labels: '["self-hosted","linux","x64","kvm"]' },
@@ -81,48 +79,6 @@ test("workflow dispatch always carries platform and exact runner labels", async 
   } finally {
     globalThis.fetch = original;
   }
-});
-
-test("even explicitly enabled iOS warmup failures cannot block Android", async () => {
-  const events: string[] = [];
-  await preparePlatforms({
-    warmIOS: true,
-    ios: async () => {
-      throw new Error("inventory timed out");
-    },
-    android: async () => {
-      events.push("android");
-    },
-    warn: (message) => {
-      events.push(message);
-    },
-  });
-  expect(events[0]).toContain("inventory timed out");
-  expect(events[1]).toBe("android");
-});
-
-test("Android commands wait for AVD readiness without sending device commands", async () => {
-  let reads = 0;
-  await waitForAndroid("test", {
-    read: async () => ({ id: "test", state: "live", androidReady: ++reads === 2 }) as any,
-    pause: async () => {},
-  });
-  expect(reads).toBe(2);
-  await expect(waitForAndroid("test", { read: async () => null })).rejects.toThrow(
-    "ended or was replaced",
-  );
-  await expect(
-    waitForAndroid("test", {
-      read: async () => ({ id: "test", state: "live", platform: "ios" }) as any,
-    }),
-  ).rejects.toThrow("Linux/KVM");
-  await expect(
-    waitForAndroid("test", {
-      read: async () => ({ id: "test", state: "live", androidReady: false }) as any,
-      pause: async () => {},
-      timeoutMs: 0,
-    }),
-  ).rejects.toThrow("No device command was sent");
 });
 
 test("prewarming selects an available phone, preferring the documented default", () => {
@@ -162,73 +118,6 @@ test("idle counts sessions, not prewarmed devices; failed inventory is unknown",
   ).toBe(1);
   expect(sessionDeviceCount({ result: { ok: false } })).toBeNull();
   expect(sessionDeviceCount({ result: { ok: true, data: { sessions: [{}] } } })).toBeNull();
-});
-
-describe("remote commands", () => {
-  test("startup timeout and session are stable across tunnel URLs", () => {
-    const oldArgs = remoteArgs(
-      ["open", "com.apple.Preferences", "--device", "iPhone"],
-      info,
-      "/state",
-    );
-    const nextArgs = remoteArgs(
-      ["open", "com.apple.Preferences", "--device", "iPhone"],
-      { ...info, tunnelUrl: "https://new.example" },
-      "/state",
-    );
-    expect(oldArgs).toContain("300000");
-    expect(oldArgs).toContain("simbox-run-1");
-    expect(nextArgs.slice(0, -3)).toEqual(oldArgs.slice(0, -3));
-    expect(nextArgs.at(-3)).toBe("https://new.example/agent-device");
-    expect(oldArgs.join(" ")).not.toContain("secret");
-  });
-  test("routing flags are inserted before a positional separator", () => {
-    const args = remoteArgs(["open", "--", "--some-app"], info, "/state");
-    expect(args.indexOf("--daemon-base-url")).toBeLessThan(args.indexOf("--"));
-    expect(args.at(-1)).toBe("--some-app");
-  });
-  test("explicit timeout/session respected; taps are not assigned startup budgets", () => {
-    const args = remoteArgs(
-      ["open", "app", "--timeout", "420000", "--session=other"],
-      info,
-      "/state",
-    );
-    expect(args.filter((arg) => arg === "--timeout")).toHaveLength(1);
-    expect(args).not.toContain("300000");
-    expect(args).not.toContain("simbox-run-1");
-    expect(remoteArgs(["press", "@e1"], info, "/state")).not.toContain("--timeout");
-  });
-  test("readiness waits for the newly registered tunnel without replaying commands", async () => {
-    const probes: string[] = [];
-    const result = await waitForRemote(info, {
-      probe: async (current) => {
-        probes.push(current.tunnelUrl);
-        return current.tunnelUrl === "https://new.example";
-      },
-      refresh: async () => ({ ...info, tunnelUrl: "https://new.example" }),
-      pause: async () => {},
-    });
-    expect(result.tunnelUrl).toBe("https://new.example");
-    expect(probes).toEqual(["https://old.example", "https://new.example"]);
-  });
-  test("readiness does not silently switch to another run", async () => {
-    await expect(
-      waitForRemote(info, {
-        probe: async () => false,
-        refresh: async () => ({ ...info, runId: "replacement" }),
-      }),
-    ).rejects.toThrow("ended or was replaced");
-  });
-  test("readiness has a bounded failure with a useful error", async () => {
-    await expect(
-      waitForRemote(info, {
-        timeoutMs: 0,
-        probe: async () => false,
-        refresh: async () => info,
-        pause: async () => {},
-      }),
-    ).rejects.toThrow("No device command was sent");
-  });
 });
 
 test("readiness requires actual proxy/upstream health, not HTTP 200 HTML or a dead daemon", () => {
@@ -450,42 +339,4 @@ describe("runner activity gateway", () => {
       upstream.close();
     }
   });
-});
-
-test("iOS runners boot one default simulator without warmup, and its failure is non-fatal", async () => {
-  const events: string[] = [];
-  await preparePlatforms({
-    warmIOS: false,
-    ios: async () => {
-      throw new Error("full warmup must not run");
-    },
-    bootIOS: async () => {
-      events.push("boot");
-      throw new Error("simctl timed out");
-    },
-    android: async () => {
-      events.push("android");
-    },
-    warn: (message) => {
-      events.push(message);
-    },
-  });
-  expect(events[0]).toBe("boot");
-  expect(events[1]).toContain("simctl timed out");
-  expect(events[2]).toBe("android");
-});
-
-test("exec replays only read-only or absolute commands, and only after a transport drop", () => {
-  const dropped = "Error (COMMAND_FAILED): Remote daemon is unavailable";
-  expect(shouldReplay(["devices", "--platform", "ios"], 1, dropped)).toBe(true);
-  expect(shouldReplay(["fold", "closed"], 1, "Daemon request timed out")).toBe(true);
-  expect(shouldReplay(["snapshot", "-i"], 1, "Failed to read daemon response")).toBe(true);
-  // Actions may already have run on the device: never replay them.
-  for (const command of ["click", "type", "fill", "install", "open", "press"])
-    expect(shouldReplay([command, "@e1"], 1, dropped)).toBe(false);
-  // Real command failures are reported, not retried.
-  expect(shouldReplay(["fold", "closed"], 1, "UNSUPPORTED_OPERATION single-panel-device")).toBe(
-    false,
-  );
-  expect(shouldReplay(["devices"], 0, dropped)).toBe(false);
 });

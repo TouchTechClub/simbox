@@ -1,6 +1,10 @@
 import type {
+  ActiveRunsResponse,
   ApiError,
+  DevicePlatform,
+  DevicePreferences,
   EnsureRunResponse,
+  InventoryResponse,
   PublicRun,
   RepoStatusResponse,
   RunSummary,
@@ -10,6 +14,8 @@ import type {
   DeviceProfile,
   RunnerTarget,
   RunnerDiagnostics,
+  WorkflowResponse,
+  WorkflowSpec,
 } from "@simbox/shared";
 import { apiBaseUrl, loadToken } from "./config.js";
 
@@ -34,13 +40,31 @@ export class ApiRequestError extends Error {
   }
 }
 
+/** Default per-request budget; a hung API must not hang the CLI. */
+export const API_TIMEOUT_MS = 30_000;
+/** Ensure may dispatch a workflow and wait on GitHub before answering. */
+export const ENSURE_TIMEOUT_MS = 120_000;
+
 interface RequestOptions {
-  method?: "GET" | "POST" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "DELETE";
   body?: unknown;
   /** Attach Bearer token from auth.json (default true). */
   auth?: boolean;
   /** Explicit token override (e.g. not-yet-saved device token). */
   token?: string;
+  /** Abort after this many ms (default API_TIMEOUT_MS). */
+  timeoutMs?: number;
+}
+
+function unreachable(err: unknown, timeoutMs: number): CliError {
+  const error = err as Error;
+  if (error?.name === "TimeoutError" || error?.name === "AbortError")
+    return new CliError(
+      `${apiBaseUrl()} did not answer within ${Math.round(timeoutMs / 1000)}s — check your connection and retry.`,
+    );
+  return new CliError(
+    `Could not reach ${apiBaseUrl()} — check your connection. (${error?.message ?? String(err)})`,
+  );
 }
 
 export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T> {
@@ -52,17 +76,18 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
   if (token) headers.authorization = `Bearer ${token}`;
   if (opts.body !== undefined) headers["content-type"] = "application/json";
 
+  const timeoutMs = opts.timeoutMs ?? API_TIMEOUT_MS;
+  const signal = AbortSignal.timeout(timeoutMs);
   let res: Response;
   try {
     res = await fetch(`${apiBaseUrl()}${path}`, {
       method: opts.method ?? "GET",
       headers,
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      signal,
     });
   } catch (err) {
-    throw new CliError(
-      `Could not reach ${apiBaseUrl()} — check your connection. (${(err as Error).message})`,
-    );
+    throw unreachable(err, timeoutMs);
   }
 
   if (res.status === 401 || res.status === 403) {
@@ -84,7 +109,11 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
       body?.message ?? `Request failed (HTTP ${res.status}).`,
     );
   }
-  return (await res.json()) as T;
+  try {
+    return (await res.json()) as T;
+  } catch (err) {
+    throw unreachable(err, timeoutMs);
+  }
 }
 
 async function parseErrorBody(res: Response): Promise<ApiError | null> {
@@ -135,11 +164,10 @@ export async function pollDeviceToken(deviceCode: string): Promise<DeviceTokenRe
         device_code: deviceCode,
         client_id: CLI_CLIENT_ID,
       }),
+      signal: AbortSignal.timeout(API_TIMEOUT_MS),
     });
   } catch (err) {
-    throw new CliError(
-      `Could not reach ${apiBaseUrl()} — check your connection. (${(err as Error).message})`,
-    );
+    throw unreachable(err, API_TIMEOUT_MS);
   }
   const body = (await res.json().catch(() => null)) as {
     access_token?: string;
@@ -159,31 +187,56 @@ export const me = async (token?: string): Promise<User> =>
 
 export const repoStatus = () => api<RepoStatusResponse>("/v1/repo/status");
 
-export const repairRepo = () =>
-  api<{ ok: boolean; state?: string; message?: string }>("/v1/repo/repair", {
-    method: "POST",
-  });
+/** Re-renders the stored workflow spec, rotates the secret and re-verifies the install. */
+export const repairRepo = () => api<RepoStatusResponse>("/v1/repo/repair", { method: "POST" });
 
 export const ensureRun = (
   fresh: boolean,
-  platform?: "ios" | "android",
+  platform?: DevicePlatform,
   runner?: RunnerTarget,
   device?: DeviceProfile,
 ) =>
   api<EnsureRunResponse>("/v1/runs/ensure", {
     method: "POST",
     body: { new: fresh, platform, runner, device },
+    timeoutMs: ENSURE_TIMEOUT_MS,
   });
 
 export const runnerSettings = () => api<RunnerSettings>("/v1/runners");
 export const runnerDiagnostics = () => api<RunnerDiagnostics>("/v1/runners/doctor");
 export const updateRunners = (scope: "account" | "repo", patch: Partial<RunnerPreferences>) =>
   api<RunnerSettings>(`/v1/runners/${scope}`, { method: "POST", body: patch });
+export const updateDevices = (scope: "account" | "repo", patch: Partial<DevicePreferences>) =>
+  api<RunnerSettings>(`/v1/devices/${scope}`, { method: "POST", body: patch });
 
-/** null when the user has no active/recent run. API wraps: {run: PublicRun | null}. */
-export async function currentRun(): Promise<PublicRun | null> {
+/** The last device catalog reported for a runner; runner omitted means the effective one. */
+export const inventory = (platform: DevicePlatform, runner?: RunnerTarget) => {
+  const query = new URLSearchParams({ platform });
+  if (runner)
+    query.set(
+      "runner",
+      runner.labels.length === 1 ? runner.labels[0]! : JSON.stringify(runner.labels),
+    );
+  return api<InventoryResponse>(`/v1/inventory?${query}`);
+};
+
+export const getWorkflow = () => api<WorkflowResponse>("/v1/workflow");
+export const putWorkflow = (spec: WorkflowSpec) =>
+  api<WorkflowResponse>("/v1/workflow", { method: "PUT", body: { spec } });
+
+/** Every active run, at most one per platform. */
+export const activeRuns = async (): Promise<PublicRun[]> =>
+  (await api<ActiveRunsResponse>("/v1/runs/active")).runs;
+
+/**
+ * This platform's active run, or null. Without a platform the API answers with
+ * the newest active run (legacy); prefer activeRuns() for routing.
+ */
+export async function currentRun(platform?: DevicePlatform): Promise<PublicRun | null> {
   try {
-    const res = await api<{ run: PublicRun | null }>("/v1/runs/current");
+    const res = await api<{ run: PublicRun | null }>(
+      platform ? `/v1/runs/current?platform=${platform}` : "/v1/runs/current",
+    );
     return res.run;
   } catch (err) {
     if (err instanceof ApiRequestError && (err.status === 404 || err.code === "no_run")) {
@@ -194,7 +247,7 @@ export async function currentRun(): Promise<PublicRun | null> {
 }
 
 export const stopRun = (runId: string) =>
-  api<{ ok: boolean; state?: string }>(`/v1/runs/${encodeURIComponent(runId)}/stop`, {
+  api<{ run: PublicRun }>(`/v1/runs/${encodeURIComponent(runId)}/stop`, {
     method: "POST",
   });
 
@@ -220,6 +273,21 @@ export function friendlyError(err: unknown): CliError {
       err.code === "dispatch_failed"
     ) {
       return new CliError(`${err.message}\nRun \`simbox repair\` to fix the repo setup.`);
+    }
+    if (err.code === "workflow_needs_repair") {
+      return new CliError(
+        `${err.message}\nRun \`simbox repair\` to upgrade the workflow (merge its PR if the default branch is protected).`,
+      );
+    }
+    if (err.code === "platform_busy") {
+      return new CliError(
+        `${err.message}\nSee \`simbox ps\`; \`simbox stop --platform <ios|android>\` ends a run and \`simbox sim --new --platform <ios|android>\` replaces one.`,
+      );
+    }
+    if (err.code === "invalid_device") {
+      return new CliError(
+        `${err.message}\nRun \`simbox devices list --platform <ios|android>\` to see what the runner offers.`,
+      );
     }
     return new CliError(err.message);
   }

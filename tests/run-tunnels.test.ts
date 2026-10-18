@@ -164,6 +164,7 @@ test("runs get one named tunnel, foreign runs get none, and ended or orphaned tu
     expect(await (await post("/v1/runs/config", { ghRunId: 77 })).json()).toEqual({
       platform: "ios",
       device: { foldable: true, xcode: "27.1" },
+      runId: "run-1",
     });
     expect((await post("/v1/runs/config", { ghRunId: 999 })).status).toBe(403);
 

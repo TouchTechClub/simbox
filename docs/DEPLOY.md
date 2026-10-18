@@ -131,10 +131,11 @@ runs keep the old agent until stopped/recreated after a release.
 
 Android testing uses `simbox sim --platform android --new`: the repaired workflow
 dispatches `ubuntu-latest`, grants `/dev/kvm` access, and downloads the sha256-pinned
-Linux x64 agent. iOS defaults to macOS ARM64. Run `simbox repair` after upgrading
-to install the new `workflow_dispatch.platform` input; the API rejects reuse of
-an active run for the wrong explicitly requested platform. Android readiness
-now requires `sys.boot_completed=1`, not merely AVD creation.
+Linux x64 agent. iOS defaults to macOS ARM64. Each user has at most one active run
+per platform, so an iOS and an Android run can be live at once. Run `simbox repair`
+after upgrading to install the current workflow (`platform`, `runner_labels` and
+`simbox_run` inputs, staged steps); older workflows run one platform at a time.
+Android readiness requires `sys.boot_completed=1`, not merely AVD creation.
 
 ---
 
@@ -152,11 +153,16 @@ cd action-src && git init && git add -A && git commit -m "v1" \
   && git remote add origin git@github.com:TouchTechClub/runner.git && git push -u origin main \
   && git tag v1 && git push origin v1
 
-# 3. Build + publish the agent release (darwin-arm64 — run on a Mac or macOS CI)
+# 3. Build + publish the agent release (cross-compiles darwin-arm64 + linux-x64)
 cd action-src && ./release.sh 1.0.0
 #    → builds packages/agent, tars, computes sha256, re-renders action.yml,
-#      prints gh release commands for TouchTechClub/simbox/releases/tag/v1
+#      prints gh release commands for TouchTechClub/simbox/releases/tag/v1.0.0
 ```
+
+`action.yml` pins the release it was rendered for: its `version` input defaults
+to that tag, whose tarballs match the embedded sha256. Workflows keep using
+`TouchTechClub/runner@v1`; the `v1` tag of the action repo moves, the agent
+release it downloads does not.
 
 ---
 
@@ -186,7 +192,19 @@ bun run dev:web           # vite :5173, proxies /api/auth + /v1 → :8787
 ## 7. CI releases (tag → deploy everything)
 
 `.github/workflows/release.yml` — `git tag v0.2.0 && git push origin v0.2.0` runs:
-quality (typecheck+lint) → agent build+GH release (macos) → alchemy deploy → npm publish → TouchTechClub/runner action.yml update + `v1` retag.
+quality (typecheck+lint) → agent build + GH release `v0.2.0` (macos) → TouchTechClub/runner action.yml update + `v1` retag, and npm publish → alchemy deploy (last). The rolling `v1` release's tarballs are no longer overwritten.
+
+### Release order
+
+Publish the action/agent release that understands the `step` input **before**
+deploying an API that commits v2 (staged) workflows; otherwise newly committed
+or repaired workflows call an action that ignores `step` and fail. `release.yml` enforces this
+(`deploy` needs `runner` and `cli`); keep the same order for manual releases.
+
+The `platform_runs_devices_workflow` D1 migration applies before the new Worker.
+Before creating the one-active-run-per-platform unique index it ends all but the
+newest active run per user + platform (`state = 'ended'`,
+`end_reason = 'superseded'`).
 
 ### GitHub repo → Settings → Secrets and variables → Actions
 

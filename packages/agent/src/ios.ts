@@ -1,5 +1,21 @@
+import { compareVersions } from "@simbox/shared";
+import type { BootedDevice, CatalogModel, DeviceCatalog } from "@simbox/shared";
 import { run } from "./proc.js";
 import { info, warn } from "./log.js";
+import { pickOrThrow, type DeviceChoice, type PlatformAdapter } from "./platform.js";
+import {
+  ensureSimulator,
+  installedXcodeVersions,
+  isFoldableType,
+  isIOSRuntime,
+  selectXcode,
+  simctlJson,
+  type DeviceType,
+  type Runtime,
+} from "./xcode.js";
+
+/** The documented default phone; GitHub images ship it on their newest runtime. */
+export const DEFAULT_IOS_MODEL = "iPhone 17e";
 
 interface Simulator {
   name: string;
@@ -50,8 +66,114 @@ export async function raisePriority(pid: number, name: string): Promise<void> {
     warn(`could not raise ${name} priority: ${result.stderr.trim().slice(0, 200)}`);
 }
 
-/** Boot the run's iPhone and build XCTest before the run is announced live. */
-export async function prepareIOS(agentDeviceBin: string, preferredUdid?: string): Promise<void> {
+/**
+ * What an Xcode offers: available iOS runtimes newest first (with the device
+ * types each can run), iPhones then iPads newest first, and the default phone
+ * on the newest runtime that runs it.
+ */
+export function buildIOSCatalog(
+  deviceTypes: DeviceType[],
+  runtimes: Runtime[],
+  xcode: string[] = [],
+): DeviceCatalog {
+  const ios = runtimes.filter(isIOSRuntime).sort((a, b) => compareVersions(b.version, a.version));
+  if (ios.length === 0) throw new Error("this Xcode has no available iOS simulator runtime");
+  const supported = new Set(
+    ios.flatMap((runtime) => (runtime.supportedDeviceTypes ?? []).map((type) => type.identifier)),
+  );
+  const listsSupport = ios.some((runtime) => runtime.supportedDeviceTypes !== undefined);
+  const family = (type: DeviceType) => type.productFamily ?? type.name.split(" ")[0];
+  const rank = (type: DeviceType) => (family(type) === "iPhone" ? 0 : 1);
+  // simctl lists device types oldest first; newer hardware needs newer runtimes.
+  const models: CatalogModel[] = deviceTypes
+    .map((type, index) => ({ type, index }))
+    .filter(
+      ({ type }) =>
+        (family(type) === "iPhone" || family(type) === "iPad") &&
+        (!listsSupport || supported.has(type.identifier)),
+    )
+    .sort(
+      (a, b) =>
+        rank(a.type) - rank(b.type) ||
+        (b.type.minRuntimeVersion ?? 0) - (a.type.minRuntimeVersion ?? 0) ||
+        b.index - a.index,
+    )
+    .map(({ type }) => ({
+      id: type.identifier,
+      name: type.name,
+      ...(isFoldableType(type) ? { foldable: true } : {}),
+    }));
+  const runs = (runtime: Runtime, id: string) =>
+    !runtime.supportedDeviceTypes || runtime.supportedDeviceTypes.some((t) => t.identifier === id);
+  const phone =
+    models.find((model) => model.name === DEFAULT_IOS_MODEL) ??
+    models.find((model) => model.name.startsWith("iPhone") && !model.foldable) ??
+    models[0];
+  const defaultOs = (phone && ios.find((runtime) => runs(runtime, phone.id))) ?? ios[0]!;
+  return {
+    os: ios.map((runtime) => ({
+      version: runtime.version,
+      name: runtime.name ?? `iOS ${runtime.version}`,
+      ...(runtime.supportedDeviceTypes
+        ? { models: runtime.supportedDeviceTypes.map((type) => type.identifier) }
+        : {}),
+    })),
+    models,
+    defaults: { model: phone?.id ?? "", os: defaultOs.version },
+    ...(xcode.length ? { xcode } : {}),
+  };
+}
+
+/**
+ * iOS: Xcode selection and the simulator happen before the agent-device
+ * daemon starts (it resolves its toolchain once); the warmup boots that
+ * simulator and builds XCTest once the daemon is up.
+ */
+export function createIOSAdapter(options: { agentDeviceBin: () => string }): PlatformAdapter {
+  let runtimes: Runtime[] = [];
+  const catalog = async () => {
+    const [{ devicetypes }, listed, xcode] = await Promise.all([
+      simctlJson<{ devicetypes: DeviceType[] }>(["devicetypes"]),
+      simctlJson<{ runtimes: Runtime[] }>(["runtimes"]),
+      installedXcodeVersions(),
+    ]);
+    runtimes = listed.runtimes;
+    return buildIOSCatalog(devicetypes, runtimes, xcode);
+  };
+  return {
+    platform: "ios",
+    catalog,
+    async select(selector) {
+      if (selector?.xcode || selector?.foldable)
+        await selectXcode({ version: selector.xcode, foldable: selector.foldable === true });
+      const offered = await catalog();
+      const { model, os } = pickOrThrow(selector, offered);
+      const runtime = runtimes.find((r) => isIOSRuntime(r) && r.version === os.version)!;
+      const udid = await ensureSimulator({ identifier: model.id, name: model.name }, runtime);
+      info(`device: ${model.name} on iOS ${os.version}`);
+      return { model, os, udid, catalog: offered };
+    },
+    async boot(choice: DeviceChoice): Promise<BootedDevice> {
+      const device = await prepareIOS(options.agentDeviceBin(), choice.udid);
+      return {
+        model: choice.model.name,
+        os: choice.os.version,
+        name: device.name,
+        id: device.udid,
+      };
+    },
+  };
+}
+
+/**
+ * Boot the run's iPhone and build XCTest before the run is announced live.
+ * Throws only if the simulator did not boot; an XCTest build failure is a
+ * warning (agent-device builds it on first use).
+ */
+export async function prepareIOS(
+  agentDeviceBin: string,
+  preferredUdid?: string,
+): Promise<{ name: string; udid: string; xctest: boolean }> {
   const started = Date.now();
   const deadline = started + 10 * 60_000;
   const inventory = await run(["xcrun", "simctl", "list", "devices", "available", "-j"], {
@@ -97,8 +219,11 @@ export async function prepareIOS(agentDeviceBin: string, preferredUdid?: string)
     { timeoutMs: Math.max(1, deadline - Date.now()) },
   );
   if (prepared.code !== 0) {
-    warn(`XCTest preparation exited ${prepared.code}: ${prepared.stderr.trim().slice(-1000)}`);
-    throw new Error(`XCTest preparation failed for ${device.name}`);
+    warn(
+      `XCTest preparation failed for ${device.name} (exit ${prepared.code}); agent-device builds it on first use: ${prepared.stderr.trim().slice(-1000)}`,
+    );
+    return { name: device.name, udid: device.udid, xctest: false };
   }
   info(`${device.name} and XCTest ready (no app session allocated)`);
+  return { name: device.name, udid: device.udid, xctest: true };
 }

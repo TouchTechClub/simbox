@@ -1,7 +1,6 @@
 import type { Database } from "@simbox/db";
 import { schema } from "@simbox/db";
-import type { RunState } from "@simbox/shared";
-import { and, desc, eq, notInArray } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 
 const { account, repos, runs, installations } = schema;
 
@@ -32,13 +31,6 @@ export interface GithubAccountRow {
   accessToken: string | null;
 }
 
-export const TERMINAL_RUN_STATES: readonly RunState[] = ["ended", "failed"];
-export const ACTIVE_RUN_STATES: readonly RunState[] = ["dispatching", "queued", "booting", "live"];
-
-export function isTerminal(state: RunState): boolean {
-  return TERMINAL_RUN_STATES.includes(state);
-}
-
 /**
  * The GitHub OAuth account linked to a better-auth user. `accountId` is the
  * GitHub user id (TEXT); `accessToken` is the user OAuth token needed by
@@ -60,17 +52,6 @@ export async function getGithubAccount(
 
 export async function getRepoForUser(db: Database, userId: string): Promise<RepoRow | null> {
   const row = await db.select().from(repos).where(eq(repos.user_id, userId)).get();
-  return row ?? null;
-}
-
-export async function getLatestActiveRun(db: Database, userId: string): Promise<RunRow | null> {
-  const row = await db
-    .select()
-    .from(runs)
-    .where(and(eq(runs.user_id, userId), notInArray(runs.state, ["ended", "failed"])))
-    .orderBy(desc(runs.created_at))
-    .limit(1)
-    .get();
   return row ?? null;
 }
 

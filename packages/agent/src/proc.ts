@@ -25,15 +25,36 @@ export interface RunOptions {
   env?: Record<string, string>;
 }
 
-/** Run a command to completion, capturing output. Never throws on non-zero exit. */
+/** Variables no child process may inherit: the repo secret stays in the agent. */
+const PRIVATE_ENV = ["SIMBOX_TOKEN"];
+
+/** The agent's environment plus `extra`, minus its own credentials. */
+export function childEnv(
+  extra: Record<string, string | undefined> = {},
+  base: Record<string, string | undefined> = Bun.env,
+): Record<string, string | undefined> {
+  const env = { ...base, ...extra };
+  for (const key of PRIVATE_ENV) delete env[key];
+  return env;
+}
+
+/**
+ * Run a command to completion, capturing output. Never throws on non-zero
+ * exit; a missing executable reports exit 127 like a shell would.
+ */
 export async function run(cmd: string[], opts: RunOptions = {}): Promise<RunResult> {
   opts.signal?.throwIfAborted();
-  const proc = Bun.spawn(cmd, {
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...Bun.env, ...opts.env },
-  });
+  let proc: Bun.Subprocess<"pipe", "pipe", "pipe">;
+  try {
+    proc = Bun.spawn(cmd, {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: childEnv(opts.env),
+    });
+  } catch (err) {
+    return { code: 127, stdout: "", stderr: `${cmd[0]}: ${String(err)}` };
+  }
   const stdin = proc.stdin;
   if (stdin && typeof stdin === "object" && "write" in stdin) {
     if (opts.input) void stdin.write(opts.input);
@@ -83,6 +104,11 @@ export async function which(bin: string): Promise<string | null> {
 let suppressLine: (line: string) => boolean = () => false;
 export function setSecretFilter(fn: (line: string) => boolean): void {
   suppressLine = fn;
+}
+
+/** Relay one line unless it matches the secret filter. */
+export function relayFiltered(prefix: string, line: string): void {
+  if (!suppressLine(line)) relay(prefix, line);
 }
 
 /**

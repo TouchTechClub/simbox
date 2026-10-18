@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { binDir } from "./provision.js";
 import { PINS } from "./pins.js";
-import { run, pumpLines } from "./proc.js";
+import { childEnv, run, pumpLines } from "./proc.js";
 import { info, warn } from "./log.js";
 
 /** Capture subprocesses invoke adb/emulator by name, unlike SDK inventory. */
@@ -82,7 +82,7 @@ export function createPreviewHub(port = 4725) {
         String(port),
         ...previewHubArgs(process.platform),
       ],
-      { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: previewHubEnv(Bun.env) },
+      { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: previewHubEnv(childEnv()) },
     );
     child = current;
     pumpLines(current.stdout, "device-hub");

@@ -8,6 +8,7 @@ import { runRoutes } from "./routes/runs";
 import { runnerRoutes } from "./routes/runners";
 import { previewRoutes } from "./routes/preview";
 import { webhookRoutes } from "./routes/webhooks";
+import { workflowRoutes } from "./routes/workflow";
 import type { Env } from "./env";
 import { sweepRunTunnels } from "./tunnels";
 
@@ -32,6 +33,7 @@ app.route("/", authRoutes);
 app.route("/", repoRoutes);
 app.route("/", runRoutes);
 app.route("/", runnerRoutes);
+app.route("/", workflowRoutes);
 app.route("/", previewRoutes);
 app.route("/", webhookRoutes);
 

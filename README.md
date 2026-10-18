@@ -8,8 +8,11 @@ Free on-demand iOS simulators & Android emulators running on your own GitHub Act
 
 1. Sign in with GitHub on the dashboard, install the GitHub App, pick a repo.
 2. We commit `.github/workflows/simbox.yml` to the repo and write a `SIMBOX_TOKEN` secret.
-3. `simbox sim` asks our API for a run → we `workflow_dispatch` into your repo → your selected macOS/iOS or Linux/Android runner boots `agent-device proxy` + a Cloudflare tunnel → the tunnel URL + daemon token come back to your CLI.
+3. `simbox sim` asks our API for a run → we `workflow_dispatch` into your repo → your selected macOS/iOS or Linux/Android runner boots the requested device, then `agent-device proxy` + a Cloudflare tunnel → the tunnel URL + daemon token come back to your CLI.
 4. Drive sims/emulators with `simbox exec <agent-device command>` until the run ends (idle timeout, `simbox stop`, or ~6h).
+
+You can have one active run per platform: an iOS run and an Android run start,
+reuse and stop independently.
 
 ## Use
 
@@ -17,14 +20,24 @@ Free on-demand iOS simulators & Android emulators running on your own GitHub Act
 npm i -g @touchtechclub/simbox agent-device@0.21.28
 simbox login
 simbox init
-simbox sim
-simbox exec devices
-# Pick an exact device name/UDID from inventory (multiple iPhones are available).
-simbox exec open com.apple.Preferences --platform ios --device "iPhone 17e"
-simbox exec snapshot -i
-simbox exec close --shutdown
-simbox stop
+simbox sim --platform ios --device "iPhone 16 Pro" --os 18.4  # or plain `simbox sim`
+simbox exec devices --platform ios
+# `sim` prints the booted device and UDID; pick an exact name/UDID from inventory.
+simbox exec open com.apple.Preferences --platform ios --device "iPhone 16 Pro"
+simbox exec snapshot -i --platform ios
+simbox exec close --shutdown --platform ios
+simbox stop --platform ios   # or --all
 ```
+
+`simbox ps` lists active runs (at most one per platform). `exec` and `stop` go
+to the run named by `--platform`, else to the only active run; with both an
+iOS and an Android run active, pass `--platform` on every command.
+
+`--device` and `--os` (`18.4`, `18` for the newest 18.x, an Android API level,
+`latest` or `oldest`) require `--platform`. `simbox devices list` shows the
+models and OS versions a runner offers, once it has run in your repository; the
+API rejects a combination that catalog cannot satisfy before dispatching. A
+run's device is fixed: changing it (or the runner) needs `--new`.
 
 `exec` supplies the daemon token and refreshes the tunnel URL before **each**
 command. Its session is stable for the GitHub run, even if the tunnel restarts.
@@ -44,36 +57,40 @@ saturates the 3-vCPU hosted Macs for several minutes; commands sent during it
 time out and the tunnel drops. The runner also turns off host Spotlight
 indexing and raises cloudflared's priority. Warmup failures are warnings, not
 fatal run failures. Android runs on Linux and never waits for iOS. The generated workflow uses stable `macos-latest`; preview-only device
-types require opting into `xcode-27` in your repository's workflow.
+types require a preview runner such as `--runner xcode-27`.
 
 Android requires **Linux/KVM**: GitHub's ARM macOS VMs cannot initialize HVF
-for the emulator, even when `-accel-check` reports success. Update the CLI and
-run `simbox repair` once to install the platform-aware workflow. Then start
-with `simbox sim --platform android` (use `--new` to replace an existing run).
-Without a platform flag, new runs still default to iOS/macOS.
+for the emulator, even when `-accel-check` reports success. Start with
+`simbox sim --platform android`; `--new` replaces only that platform's run.
+Without a platform flag, `sim` reuses the only active run, else uses iOS.
 
-Android AVD preparation runs in the background. `simbox exec ... --platform
-android` waits for it before sending commands. `android_ready: yes` means the
-SDK/emulator executable and AVD are installed **and the emulator has completed boot**:
+Update the CLI and run `simbox repair` once (merge its PR if the branch is
+protected) to install the current workflow. Older workflows still work, one
+platform at a time. Repair rotates `SIMBOX_TOKEN` only when no run is active.
+
+The workflow boots the device before the run goes live. `sim` and `exec` wait
+until `devices_ready: yes` (for Android, the emulator has completed boot) before
+sending commands:
 
 ```bash
 simbox sim --new --platform android --json
 simbox exec boot --platform android --device simbox --headless
 simbox exec open com.android.settings --platform android --device simbox
-simbox exec snapshot -i
+simbox exec snapshot -i --platform android
 ```
 
 Direct `agent-device` clients remain supported via the exports printed by
 `simbox sim`, but must refresh those exports after a tunnel change. Simbox does
 not edit agent-device's global configuration or existing proxy profiles.
 
-## Runner selection and agent setup
+## Runners, devices, workflow and agent setup
 
 Configure independent iOS/macOS and Android/Linux runners on the dashboard's
 **Runners** page. New runs resolve **CLI override → repository override → account
 default → GitHub default**. GitHub and Blacksmith presets plus custom labels are
-supported; Blacksmith requires its App and separate billing. Settings affect only
-future runs and survive `simbox repair`.
+supported; Blacksmith requires its App and separate billing. Device model and
+OS defaults layer the same way, field by field. Settings affect only future runs
+and survive `simbox repair`.
 
 ```bash
 simbox runners set android blacksmith-4vcpu-ubuntu-2404 --scope account
@@ -82,8 +99,17 @@ simbox runners show
 simbox doctor
 simbox sim --new --platform android --runner ubuntu-latest
 simbox sim --new --platform ios --runner xcode-27 --xcode 27.1 --foldable
+simbox devices list --platform ios   # catalog the runner reported on its last run
+simbox devices set android --device pixel_8 --os 35 --scope account
+simbox workflow add --name Checkout --uses actions/checkout@v4  # default: before start
+simbox workflow show
 simbox skills install  # asks current project vs global, then agent selection
 ```
+
+`.github/workflows/simbox.yml` has three locked steps (prepare → start → serve);
+your own steps can run before, between or after them. Edit them in the
+dashboard or with `simbox workflow`; saving needs push access and commits to the
+default branch, or opens a PR when it is protected.
 
 Upgrade older workflows with `simbox repair` once (merge its PR if needed) before
 using runner-aware dispatch. Custom runners must be Linux x64/KVM or macOS
@@ -91,7 +117,7 @@ ARM64/Xcode with the documented tools. Simbox never silently falls back to
 another runner. For automation: `simbox skills install --project --agent codex
 --yes`. Direct installation: `bunx skills add TouchTechClub/simbox --skill simbox`.
 
-Details: [runner configuration and skills](docs/RUNNERS-AND-SKILLS.md).
+Details: [runners, devices, workflow and skills](docs/RUNNERS-AND-SKILLS.md).
 
 ## Live device panel
 
@@ -117,14 +143,14 @@ This requires the updated Simbox CLI, runner binary, and S5 Code server.
 
 ## Monorepo
 
-| Path              | What                                                                  |
-| ----------------- | --------------------------------------------------------------------- |
-| `apps/api`        | Cloudflare Worker (Hono + D1 + KV) — auth, repo connect, run registry |
-| `apps/cli`        | `@touchtechclub/simbox` npm package — login/sim/exec/ps/stop/repair   |
-| `apps/web`        | TanStack dashboard (Vite + Router + Query) — CF Pages                 |
-| `packages/agent`  | `simbox-agent` Bun-compiled binary that runs inside the GH job        |
-| `packages/shared` | API contracts, constants, canonical workflow YAML                     |
-| `action-src`      | Source of the composite action published to `TouchTechClub/runner`    |
+| Path              | What                                                                    |
+| ----------------- | ----------------------------------------------------------------------- |
+| `apps/api`        | Cloudflare Worker (Hono + D1 + KV) — auth, repo connect, run registry   |
+| `apps/cli`        | `@touchtechclub/simbox` npm package — sim/exec/ps/stop/devices/workflow |
+| `apps/web`        | TanStack dashboard (Vite + Router + Query) — CF Pages                   |
+| `packages/agent`  | `simbox-agent` Bun-compiled binary that runs inside the GH job          |
+| `packages/shared` | API contracts, constants, workflow spec + YAML renderer                 |
+| `action-src`      | Source of the composite action published to `TouchTechClub/runner`      |
 
 ## Develop
 

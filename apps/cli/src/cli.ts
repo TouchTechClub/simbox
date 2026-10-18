@@ -8,7 +8,25 @@ import { cmdInit, cmdLogin, cmdLogout, cmdPs, cmdRepair, cmdSim, cmdStop } from 
 import { cmdExec } from "./remote.js";
 import { cmdRunnerPresets, cmdRunnersSet, cmdRunnersShow, cmdDoctor } from "./runners.js";
 import { cmdSkillsInstall, type SkillInstallOptions } from "./skills.js";
+import { cmdDevicesList, cmdDevicesSet } from "./devices.js";
+import {
+  cmdWorkflowAdd,
+  cmdWorkflowApply,
+  cmdWorkflowEdit,
+  cmdWorkflowMove,
+  cmdWorkflowRemove,
+  cmdWorkflowShow,
+  type AddStepOptions,
+} from "./workflow.js";
 import type { DevicePlatform } from "@simbox/shared";
+
+const platformOption = (description: string) =>
+  new Option("--platform <platform>", description).choices(["ios", "android"]);
+const scopeOption = () =>
+  new Option("--scope <scope>", "account defaults or connected repository override")
+    .choices(["account", "repo"])
+    .makeOptionMandatory();
+const collect = (value: string, previous: string[] = []) => [...previous, value];
 
 const program = new Command().enablePositionalOptions();
 
@@ -35,29 +53,41 @@ program
 program
   .command("sim")
   .description("Ensure a run and its tunnel are ready for device commands")
-  .option("--new", "force a fresh run even if one is live")
+  .option("--new", "replace this platform's run with a fresh one")
   .addOption(
-    new Option("--platform <platform>", "ios: macOS runner; android: Linux/KVM runner").choices([
-      "ios",
-      "android",
-    ]),
+    platformOption(
+      "ios: macOS runner; android: Linux/KVM runner (omitted: reuse the only active run, else iOS)",
+    ),
   )
   .option(
     "--runner <label-or-json>",
     "override runner label or JSON label array; requires --platform",
   )
   .option(
+    "--device <model>",
+    'simulator/emulator model, e.g. "iPhone 16 Pro" or pixel_8 (see `simbox devices list`); requires --platform',
+  )
+  .option(
+    "--os <version>",
+    "iOS version (18.4, 18), Android API level (35), latest or oldest; requires --platform",
+  )
+  .option(
     "--foldable",
     "boot a foldable: iPhone Duo (needs Xcode 27.1+, e.g. --runner xcode-27) or a 7.6in Android foldable; requires --platform",
   )
   .option("--xcode <version>", "iOS: select this Xcode (e.g. 27.1) before the device daemon starts")
-  .option("--json", "print {tunnel_url, daemon_token, run_id, expires_at} as JSON only")
+  .option(
+    "--json",
+    "print {tunnel_url, daemon_token, run_id, expires_at, platform, booted_device} as JSON only",
+  )
   .action(
     (opts: {
       new?: boolean;
       json?: boolean;
-      platform?: "ios" | "android";
+      platform?: DevicePlatform;
       runner?: string;
+      device?: string;
+      os?: string;
       foldable?: boolean;
       xcode?: string;
     }) => {
@@ -68,7 +98,9 @@ program
 
 program
   .command("exec")
-  .description("Run agent-device with fresh tunnel credentials and a cold-boot startup budget")
+  .description(
+    "Run agent-device with fresh tunnel credentials and a cold-boot startup budget; --platform picks the run when both are active",
+  )
   .argument("[args...]", "agent-device command and arguments")
   .allowUnknownOption()
   .allowExcessArguments()
@@ -80,23 +112,28 @@ program
 
 program
   .command("ps")
-  .description("Show the current run")
-  .action(() => {
+  .description("Show active runs (at most one per platform)")
+  .option("--json", "print {runs} as JSON")
+  .action((opts: { json?: boolean }) => {
     requireToken();
-    return run(cmdPs());
+    return run(cmdPs(opts));
   });
 
 program
   .command("stop")
-  .description("Cancel the active run")
-  .action(() => {
+  .description("Stop the active run (--platform picks one when both are active)")
+  .addOption(platformOption("stop this platform's run"))
+  .option("--all", "stop every active run")
+  .action((opts: { platform?: DevicePlatform; all?: boolean }) => {
     requireToken();
-    return run(cmdStop());
+    return run(cmdStop(opts));
   });
 
 program
   .command("repair")
-  .description("Re-commit the workflow, rotate the repo secret, re-verify the installation")
+  .description(
+    "Re-commit the workflow, re-verify the installation, and rotate the repo secret when no run is active",
+  )
   .action(() => {
     requireToken();
     return run(cmdRepair());
@@ -134,13 +171,7 @@ for (const command of ["set", "reset"] as const) {
     .command(command)
     .addArgument(new Argument("<platform>").choices(["ios", "android"]));
   if (command === "set") cmd.argument("<label-or-json>", "runner label or JSON label array");
-  cmd
-    .addOption(
-      new Option("--scope <scope>", "account defaults or connected repository override")
-        .choices(["account", "repo"])
-        .makeOptionMandatory(),
-    )
-    .option("--json", "print settings as JSON");
+  cmd.addOption(scopeOption()).option("--json", "print settings as JSON");
   if (command === "set")
     cmd.action(
       (
@@ -158,6 +189,122 @@ for (const command of ["set", "reset"] as const) {
       return run(cmdRunnersSet(platform, null, opts.scope, opts.json));
     });
 }
+
+const devices = program
+  .command("devices")
+  .description("Device models and OS versions a runner offers, and your device defaults");
+devices
+  .command("list")
+  .description("Show the last catalog a runner reported (models, OS versions, Xcode)")
+  .addOption(platformOption("only this platform"))
+  .option("--runner <label-or-json>", "a runner other than the effective one; requires --platform")
+  .option("--json", "print {ios?, android?} inventory responses as JSON")
+  .action((opts: { platform?: DevicePlatform; runner?: string; json?: boolean }) => {
+    requireToken();
+    return run(cmdDevicesList(opts));
+  });
+devices
+  .command("set")
+  .description("Set the default device model and/or OS for future runs")
+  .addArgument(new Argument("<platform>").choices(["ios", "android"]))
+  .option("--device <model>", 'model, e.g. "iPhone 16 Pro" or pixel_8')
+  .option("--os <version>", "iOS version, Android API level, latest or oldest")
+  .option("--foldable", "default to a foldable instead of a model")
+  .addOption(scopeOption())
+  .option("--json", "print settings as JSON")
+  .action(
+    (
+      platform: DevicePlatform,
+      opts: {
+        device?: string;
+        os?: string;
+        foldable?: boolean;
+        scope: "account" | "repo";
+        json?: boolean;
+      },
+    ) => {
+      requireToken();
+      return run(cmdDevicesSet(platform, opts, opts.scope, opts.json));
+    },
+  );
+devices
+  .command("reset")
+  .description("Clear a device default so the scope inherits")
+  .addArgument(new Argument("<platform>").choices(["ios", "android"]))
+  .addOption(scopeOption())
+  .option("--json", "print settings as JSON")
+  .action((platform: DevicePlatform, opts: { scope: "account" | "repo"; json?: boolean }) => {
+    requireToken();
+    return run(cmdDevicesSet(platform, null, opts.scope, opts.json));
+  });
+
+const workflow = program
+  .command("workflow")
+  .description("Show and edit the steps of .github/workflows/simbox.yml");
+workflow
+  .command("show")
+  .description("List steps (prepare/start/serve are locked) and the committed file's status")
+  .option("--yaml", "print the rendered YAML")
+  .option("--json", "print {spec, yaml, status, repoState, prUrl} as JSON")
+  .action((opts: { yaml?: boolean; json?: boolean }) => {
+    requireToken();
+    return run(cmdWorkflowShow(opts));
+  });
+workflow
+  .command("add")
+  .description("Add a step (default: before the locked `start` step, i.e. before devices boot)")
+  .requiredOption("--name <name>", "step name")
+  .option("--run <script>", "shell script to run")
+  .option("--uses <action>", "action to use, e.g. actions/checkout@v4")
+  .option("--with <key=value>", "action input (repeatable)", collect)
+  .option("--env <key=value>", "environment variable (repeatable)", collect)
+  .option("--if <expression>", "GitHub Actions condition")
+  .addOption(platformOption("only run this step for one platform"))
+  .option("--id <id>", "step id (default: derived from --name)")
+  .option("--before <id>", "insert before this step")
+  .option("--after <id>", "insert after this step")
+  .option("--json", "print the saved workflow as JSON")
+  .action((opts: AddStepOptions) => {
+    requireToken();
+    return run(cmdWorkflowAdd(opts));
+  });
+workflow
+  .command("remove")
+  .description("Remove a custom step")
+  .argument("<id>", "step id")
+  .option("--json", "print the saved workflow as JSON")
+  .action((id: string, opts: { json?: boolean }) => {
+    requireToken();
+    return run(cmdWorkflowRemove(id, opts));
+  });
+workflow
+  .command("move")
+  .description("Move a custom step before or after another step")
+  .argument("<id>", "step id")
+  .option("--before <id>", "move before this step")
+  .option("--after <id>", "move after this step")
+  .option("--json", "print the saved workflow as JSON")
+  .action((id: string, opts: { before?: string; after?: string; json?: boolean }) => {
+    requireToken();
+    return run(cmdWorkflowMove(id, opts));
+  });
+workflow
+  .command("edit")
+  .description("Edit the steps as JSON in $VISUAL/$EDITOR, then save")
+  .option("--json", "print the saved workflow as JSON")
+  .action((opts: { json?: boolean }) => {
+    requireToken();
+    return run(cmdWorkflowEdit(opts));
+  });
+workflow
+  .command("apply")
+  .description("Save a workflow spec from a JSON file ({steps, permissions?})")
+  .argument("<file>", "JSON file")
+  .option("--json", "print the saved workflow as JSON")
+  .action((file: string, opts: { json?: boolean }) => {
+    requireToken();
+    return run(cmdWorkflowApply(file, opts));
+  });
 
 program
   .command("skills")

@@ -92,6 +92,7 @@ jobs:
         run: |
           sed -e "s/{{SHA256}}/${{ steps.pkg.outputs.sha256 }}/" \
             -e "s/{{SHA256_LINUX}}/${{ steps.pkg.outputs.sha256_linux }}/" \
+            -e "s/{{VERSION}}/$TAG/" \
             action-src/action.yml.template > action-src/action.yml
           cp action-src/action.yml runner-action.yml
       - name: Upload tarball to GitHub Release
@@ -101,11 +102,11 @@ jobs:
               --title "simbox $TAG" --generate-notes
           gh release upload "$TAG" simbox-agent-darwin-arm64.tar.gz simbox-agent-linux-amd64.tar.gz \
             --repo "$GITHUB_REPOSITORY" --clobber
-          # action.yml's `version` input defaults to v1 — the rolling release
-          # users actually download from. Keep its tarball in lockstep with
-          # the sha256 embedded in action.yml or every run fails the checksum.
-          gh release upload v1 simbox-agent-darwin-arm64.tar.gz simbox-agent-linux-amd64.tar.gz \
-            --repo "$GITHUB_REPOSITORY" --clobber
+          # action.yml pins this immutable release ($TAG), so its tarball and
+          # sha256 always match. The rolling `v1` release is left untouched:
+          # overwriting it used to break every run between this upload and
+          # the runner job retagging v1, and still serves action.yml copies
+          # pinned to a commit from before version pinning.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Commit rendered action.yml back to main

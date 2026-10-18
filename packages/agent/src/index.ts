@@ -1,7 +1,10 @@
 /**
- * simbox-agent — boots agent-device proxy + cloudflared quick tunnel on a
- * GitHub Actions macOS runner, registers with the simbox API, then
- * supervises until idle/hard-exit/token-revocation.
+ * simbox-agent — prepares the run's iOS simulator (macOS) or Android emulator
+ * (Linux/KVM), boots agent-device proxy + a Cloudflare tunnel, registers with
+ * the simbox API, then supervises until idle/hard-exit/stop/token revocation.
+ *
+ * Staged mode (SIMBOX_STAGE_DIR, see stage.ts) pauses between "devices
+ * booted" and "tunnel + register" so workflow steps can run in between.
  *
  * Exit codes: 0 = clean shutdown (green check), 1 = failure (red X).
  */
@@ -13,31 +16,46 @@ import {
   PROD_API_URL,
   PROXY_PORT,
 } from "@simbox/shared";
-import type { DeviceProfile, RunRegisterRequest, RunTunnelResponse } from "@simbox/shared";
+import type {
+  BootedDevice,
+  DevicePlatform,
+  DeviceProfile,
+  RunConfigResponse,
+  RunRegisterRequest,
+  RunTunnelResponse,
+} from "@simbox/shared";
 import { PINS } from "./pins.js";
 import pkg from "../package.json" with { type: "json" };
 import { addMask, error, info, warn } from "./log.js";
-import { pumpLines, setSecretFilter } from "./proc.js";
+import { childEnv, pumpLines, relayFiltered, run, setSecretFilter } from "./proc.js";
 import type { ChildProc } from "./proc.js";
-import {
-  installAgentDevice,
-  installCloudflared,
-  prepareAndroid,
-  configureAndroidEnvironment,
-} from "./provision.js";
-import { ApiClient, HttpError } from "./api.js";
+import { installAgentDevice, installCloudflared } from "./provision.js";
+import { ApiClient, HttpError, runIsOver } from "./api.js";
 import { countActiveDevices } from "./devices.js";
-import { run } from "./proc.js";
 import { waitForAuthoritativeDns } from "./dns.js";
 import { startGateway } from "./gateway.js";
 import { createPreviewHub } from "./preview-hub.js";
 import { healthyProxy, waitForProxy } from "./health.js";
-import { prepareIOS, quietHost, raisePriority } from "./ios.js";
-import { ensureFoldableSimulator, selectXcode } from "./xcode.js";
-import { preparePlatforms } from "./platforms.js";
+import { createIOSAdapter, prepareIOS, quietHost, raisePriority } from "./ios.js";
+import {
+  configureAndroidEnvironment,
+  createAndroidAdapter,
+  type AndroidAdapter,
+} from "./android.js";
+import {
+  hostMismatch,
+  hostPlatform,
+  printableCatalog,
+  type DeviceChoice,
+  type PlatformAdapter,
+} from "./platform.js";
+import { createStage, jobStartedAt } from "./stage.js";
 
 const TUNNEL_URL_TIMEOUT_MS = 60_000;
 const TUNNEL_URL_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
+/** Any quick-tunnel hostname, with or without a scheme. */
+const QUICK_TUNNEL_HOST_RE = /[a-z0-9-]+\.trycloudflare\.com/i;
+const RUN_ID_RE = /^[A-Za-z0-9_-]{1,100}$/;
 const REGISTER_ATTEMPTS = 3;
 const HEARTBEAT_FAILURE_LIMIT = 3;
 const TUNNEL_PROBE_TIMEOUT_MS = 15_000;
@@ -46,6 +64,12 @@ const TUNNEL_REPROBE_INTERVAL_MS = 10_000;
 const PROXY_PROBE_TIMEOUT_MS = 10_000;
 const PROXY_PROBE_FAILURE_LIMIT = 2;
 const PROXY_RESTART_LIMIT = 5; // daemon can die repeatedly on GH macOS runners
+const TUNNEL_RESTART_LIMIT = 3;
+const EMULATOR_RESTART_LIMIT = 2;
+/** A child that ran this long before dying earns back its full restart budget. */
+const HEALTHY_RESET_MS = 30 * 60_000;
+/** Cleanup never outlives this; a stuck step must not keep the job running. */
+const SHUTDOWN_DEADLINE_MS = 30_000;
 const UPSTREAM_PORT = PROXY_PORT + 1;
 
 // ---------------------------------------------------------------------------
@@ -56,33 +80,59 @@ interface ManagedChild {
   name: string;
   proc: ChildProc;
   restarts: number;
+  /** Exited, or deliberately being stopped (its exit is then not "unexpected"). */
   dead: boolean;
+  startedAt: number;
 }
+
+const stage = createStage(Bun.env.SIMBOX_STAGE_DIR || undefined);
 
 const state = {
   apiUrl: Bun.env.SIMBOX_API_URL ?? PROD_API_URL,
   token: Bun.env.SIMBOX_TOKEN ?? "",
   ghRunId: 0,
+  /** Simbox's run id (`simbox_run` workflow input); empty for legacy/manual runs. */
+  runId: (Bun.env.SIMBOX_RUN_ID ?? "").trim(),
   ghRunAttempt: Bun.env.GITHUB_RUN_ATTEMPT ?? "?",
+  platform: "ios" as DevicePlatform,
   daemonToken: "",
   tunnelUrl: "",
   /** Named tunnel for this run; null → quick tunnel (older API, or provisioning failed). */
   named: null as RunTunnelResponse | null,
   /** Device requested for this run beyond the platform defaults. */
   device: null as DeviceProfile | null,
-  /** The iPhone Duo booted instead of the default simulator on foldable runs. */
-  foldableUdid: undefined as string | undefined,
+  /** What was actually booted, once it is. */
+  booted: null as BootedDevice | null,
   agentDeviceBin: "",
   cloudflaredBin: "",
-  androidReady: false,
+  /** The run's device is booted and accepts commands. */
+  devicesReady: false,
+  /** Device preparation or emulator recovery is running: work, not idleness. */
+  preparing: true,
+  activeDevices: 0,
+  emulatorRestarts: 0,
   registered: false,
   shuttingDown: false,
-  bootedAt: Date.now(),
+  /** Hard-exit clock: the job's start when the prepare step recorded it. */
+  bootedAt: jobStartedAt(Bun.env.SIMBOX_JOB_STARTED_AT, Date.now()),
   children: {} as { proxy?: ManagedChild; tunnel?: ManagedChild; emulator?: ManagedChild },
   gateway: null as ReturnType<typeof startGateway> | null,
   wake: null as (() => void) | null,
 };
 const previewHub = createPreviewHub();
+let adapter: PlatformAdapter | null = null;
+let android: AndroidAdapter | null = null;
+
+/** Every exit path records its code for the action's serve step first. */
+function exit(code: number): never {
+  stage.recordExit(code);
+  process.exit(code);
+}
+
+/** Run identity sent on every runner API call. */
+const ids = () => ({ ghRunId: state.ghRunId, ...(state.runId ? { runId: state.runId } : {}) });
+
+const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 function notifyWake(): void {
   const w = state.wake;
@@ -107,12 +157,13 @@ async function interruptibleSleep(ms: number): Promise<void> {
 // Child processes
 // ---------------------------------------------------------------------------
 
-function track(name: string, proc: ChildProc): ManagedChild {
-  const child: ManagedChild = { name, proc, restarts: 0, dead: false };
+function track(name: string, proc: ChildProc, restarts = 0): ManagedChild {
+  const child: ManagedChild = { name, proc, restarts, dead: false, startedAt: Date.now() };
   proc.exited
     .then((code) => {
+      const expected = child.dead;
       child.dead = true;
-      if (!state.shuttingDown) {
+      if (!expected && !state.shuttingDown) {
         warn(`${name} exited unexpectedly (code ${code})`);
         notifyWake();
       }
@@ -123,7 +174,27 @@ function track(name: string, proc: ChildProc): ManagedChild {
   return child;
 }
 
-function spawnProxy(): ManagedChild {
+/** Stop a child and wait until it is gone, so a replacement can reuse its port. */
+async function stopChild(child: ManagedChild): Promise<void> {
+  child.dead = true;
+  const running = () => child.proc.exitCode === null && child.proc.signalCode === null;
+  for (const signal of ["SIGTERM", "SIGKILL"] as const) {
+    if (!running()) return;
+    try {
+      child.proc.kill(signal);
+    } catch {
+      /* already gone */
+    }
+    await Promise.race([child.proc.exited, Bun.sleep(5000)]);
+  }
+}
+
+/** Restarts already spent; a child that ran healthily for a while starts afresh. */
+function restartsUsed(child: ManagedChild): number {
+  return Date.now() - child.startedAt >= HEALTHY_RESET_MS ? 0 : child.restarts;
+}
+
+function spawnProxy(restarts = 0): ManagedChild {
   const proc = Bun.spawn(
     [
       state.agentDeviceBin,
@@ -141,10 +212,10 @@ function spawnProxy(): ManagedChild {
       stdin: "ignore",
       // Simbox owns idle shutdown. Otherwise an unused embedded daemon reaps
       // itself after five minutes, leaving a live proxy with a dead upstream.
-      env: { ...Bun.env, AGENT_DEVICE_DAEMON_IDLE_TIMEOUT_MS: "0" },
+      env: childEnv({ AGENT_DEVICE_DAEMON_IDLE_TIMEOUT_MS: "0" }),
     },
   );
-  const child = track("agent-device proxy", proc);
+  const child = track("agent-device proxy", proc, restarts);
   pumpLines(proc.stdout, "agent-device");
   pumpLines(proc.stderr, "agent-device");
   return child;
@@ -155,8 +226,8 @@ interface TunnelSpawn {
   url: Promise<string>;
 }
 
-function spawnTunnel(): TunnelSpawn {
-  return state.named ? spawnNamedTunnel(state.named) : spawnQuickTunnel();
+function spawnTunnel(restarts = 0): TunnelSpawn {
+  return state.named ? spawnNamedTunnel(state.named, restarts) : spawnQuickTunnel(restarts);
 }
 
 /**
@@ -164,17 +235,17 @@ function spawnTunnel(): TunnelSpawn {
  * token stays in the environment (never argv); it is up once the first edge
  * connection registers.
  */
-function spawnNamedTunnel(named: RunTunnelResponse): TunnelSpawn {
+function spawnNamedTunnel(named: RunTunnelResponse, restarts: number): TunnelSpawn {
   const proc = Bun.spawn(
     [state.cloudflaredBin, "tunnel", "--no-autoupdate", "--protocol", "http2", "run"],
     {
       stdout: "pipe",
       stderr: "pipe",
       stdin: "ignore",
-      env: { ...Bun.env, TUNNEL_TOKEN: named.connectorToken },
+      env: childEnv({ TUNNEL_TOKEN: named.connectorToken }),
     },
   );
-  const child = track("cloudflared", proc);
+  const child = track("cloudflared", proc, restarts);
   if (process.platform === "darwin") void raisePriority(proc.pid, "cloudflared");
   let settled = false;
   const url = new Promise<string>((resolve, reject) => {
@@ -203,7 +274,7 @@ function spawnNamedTunnel(named: RunTunnelResponse): TunnelSpawn {
   return { child, url };
 }
 
-function spawnQuickTunnel(): TunnelSpawn {
+function spawnQuickTunnel(restarts: number): TunnelSpawn {
   const proc = Bun.spawn(
     [
       state.cloudflaredBin,
@@ -217,9 +288,9 @@ function spawnQuickTunnel(): TunnelSpawn {
       `http://127.0.0.1:${PROXY_PORT}`,
       "--no-autoupdate",
     ],
-    { stdout: "pipe", stderr: "pipe", stdin: "ignore" },
+    { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: childEnv() },
   );
-  const child = track("cloudflared", proc);
+  const child = track("cloudflared", proc, restarts);
   if (process.platform === "darwin") void raisePriority(proc.pid, "cloudflared");
 
   // The trycloudflare URL is printed on stderr once the tunnel is up.
@@ -251,6 +322,12 @@ function spawnQuickTunnel(): TunnelSpawn {
   return { child, url };
 }
 
+/** Mask a tunnel URL and its bare hostname (logs mention either). */
+function maskTunnel(url: string): void {
+  addMask(url);
+  addMask(new URL(url).hostname);
+}
+
 // ---------------------------------------------------------------------------
 // API calls with their retry/fatal policies
 // ---------------------------------------------------------------------------
@@ -265,12 +342,11 @@ function isRetriable(err: unknown): boolean {
   return true; // network errors retriable
 }
 
-/** The run's requested device; defaults when the API is older or unreachable. */
-async function requestRunConfig(): Promise<DeviceProfile | null> {
+/** What to prepare; null (host defaults) when the API is older or unreachable. */
+async function requestRunConfig(): Promise<RunConfigResponse | null> {
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const config = await api().config({ ghRunId: state.ghRunId });
-      return config.device ?? null;
+      return await api().config(ids());
     } catch (err) {
       if (err instanceof HttpError && err.status < 500) {
         info(`run config unavailable (HTTP ${err.status}); preparing default devices`);
@@ -288,10 +364,9 @@ async function requestRunConfig(): Promise<DeviceProfile | null> {
 async function requestNamedTunnel(): Promise<RunTunnelResponse | null> {
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      const named = await api().tunnel({ ghRunId: state.ghRunId });
+      const named = await api().tunnel(ids());
       addMask(named.connectorToken);
-      addMask(named.tunnelUrl);
-      addMask(new URL(named.tunnelUrl).hostname);
+      maskTunnel(named.tunnelUrl);
       info("named tunnel provisioned");
       return named;
     } catch (err) {
@@ -308,9 +383,10 @@ async function requestNamedTunnel(): Promise<RunTunnelResponse | null> {
   return null;
 }
 
+/** Throws on failure, except a run that is already over, which exits cleanly. */
 async function register(): Promise<void> {
   const body: RunRegisterRequest = {
-    ghRunId: state.ghRunId,
+    ...ids(),
     tunnelUrl: state.tunnelUrl,
     daemonToken: state.daemonToken,
     versions: {
@@ -329,6 +405,7 @@ async function register(): Promise<void> {
       return;
     } catch (err) {
       lastErr = err;
+      if (runIsOver(err)) await shutdown("run is over (stopped before it went live)", 0);
       if (!isRetriable(err)) {
         error(`registration rejected (${String(err)}) — exiting`);
         throw err;
@@ -339,6 +416,54 @@ async function register(): Promise<void> {
   }
   error(`registration failed after ${REGISTER_ATTEMPTS} attempts: ${String(lastErr)}`);
   throw lastErr;
+}
+
+let heartbeatFailures = 0;
+
+/** One heartbeat. A run the API says is over exits cleanly; repeated failures exit 1. */
+async function heartbeat(): Promise<boolean> {
+  try {
+    await api().heartbeat({
+      ...ids(),
+      activeDevices: state.activeDevices,
+      androidReady: state.platform === "android" && state.devicesReady,
+      devicesReady: state.devicesReady,
+    });
+    heartbeatFailures = 0;
+    return true;
+  } catch (err) {
+    if (runIsOver(err, { notFound: true }))
+      await shutdown("run is over (stopped or ended on the API)", 0);
+    if (err instanceof HttpError && (err.status === 401 || err.status === 403)) {
+      error("heartbeat unauthorized — SIMBOX_TOKEN revoked, exiting");
+      await shutdown("token revoked", 1);
+    }
+    heartbeatFailures++;
+    warn(
+      `heartbeat failed (${heartbeatFailures}/${HEARTBEAT_FAILURE_LIMIT}): ${String(err).slice(0, 200)}`,
+    );
+    if (heartbeatFailures >= HEARTBEAT_FAILURE_LIMIT) {
+      error("too many consecutive heartbeat failures — exiting");
+      await shutdown("heartbeat failures", 1);
+    }
+    return false;
+  }
+}
+
+/** Tell the API what this runner offers and what it booted. Never fatal. */
+async function reportInventory(choice: DeviceChoice | null): Promise<void> {
+  try {
+    const catalog = choice?.catalog ?? (await adapter!.catalog());
+    if (state.shuttingDown) return;
+    await api().inventory({
+      ...ids(),
+      catalog: printableCatalog(catalog),
+      ...(state.booted ? { booted: state.booted } : {}),
+    });
+    info("reported this runner's device catalog");
+  } catch (err) {
+    info(`device catalog not reported (non-fatal): ${String(err).slice(0, 200)}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -372,13 +497,24 @@ async function killChildren(): Promise<void> {
   }
 }
 
+/**
+ * Deregister, stop children and exit. Only the first call does anything; a
+ * second signal (or a failure noticed meanwhile) waits for that cleanup.
+ */
 async function shutdown(reason: string, code: number): Promise<never> {
-  if (state.shuttingDown) process.exit(code);
+  if (state.shuttingDown) {
+    info(`already shutting down; ignoring: ${reason}`);
+    return new Promise<never>(() => {});
+  }
   state.shuttingDown = true;
+  setTimeout(() => {
+    warn(`cleanup did not finish within ${SHUTDOWN_DEADLINE_MS / 1000}s`);
+    exit(code);
+  }, SHUTDOWN_DEADLINE_MS);
   info(`shutting down: ${reason}`);
   if (state.ghRunId > 0 && state.token) {
     try {
-      await api().deregister({ ghRunId: state.ghRunId, reason });
+      await api().deregister({ ...ids(), reason });
     } catch (err) {
       warn(`deregister failed (continuing shutdown): ${String(err).slice(0, 200)}`);
     }
@@ -390,51 +526,125 @@ async function shutdown(reason: string, code: number): Promise<never> {
   // closed. Preview transports are already released; never wedge hard exit.
   await Promise.race([state.gateway?.server.stop(true), Bun.sleep(1000)]);
   info(`goodbye (exit ${code})`);
-  process.exit(code);
+  exit(code);
+}
+
+// ---------------------------------------------------------------------------
+// Devices
+// ---------------------------------------------------------------------------
+
+/**
+ * Boot the chosen device. Never throws: an Android run, or an explicitly
+ * requested iOS device, that cannot boot shuts the run down with the reason;
+ * the default iPhone's warmup failing only warns (agent-device boots on use).
+ */
+async function bootDevices(choice: DeviceChoice | null): Promise<void> {
+  try {
+    if (choice) state.booted = await adapter!.boot(choice);
+    else await prepareIOS(state.agentDeviceBin);
+    state.devicesReady = true;
+    state.preparing = false;
+    info(`devices ready${state.booted ? `: ${state.booted.name} (${state.booted.os})` : ""}`);
+    if (state.registered) void heartbeat();
+  } catch (err) {
+    state.preparing = false;
+    const reason = `${state.platform === "ios" ? "iOS simulator" : "Android emulator"} did not boot: ${message(err)}`;
+    if (state.platform === "android" || state.device) {
+      error(reason.slice(0, 500));
+      await shutdown(reason.slice(0, 200), 1);
+    }
+    warn(`optional iOS warmup failed; the simulator boots on first use: ${message(err)}`);
+    // Still usable: agent-device boots the simulator on the first command.
+    state.devicesReady = true;
+    if (state.registered) void heartbeat();
+  }
+  void reportInventory(choice);
+}
+
+/** A crashed emulator is relaunched in the background within a small budget. */
+function recoverEmulator(dead: ManagedChild): string | null {
+  const used = restartsUsed(dead);
+  if (used >= EMULATOR_RESTART_LIMIT)
+    return `Android emulator crashed ${used + 1} times; giving up`;
+  state.devicesReady = false;
+  state.preparing = true;
+  state.emulatorRestarts = used + 1;
+  warn(`Android emulator died; relaunching it (${used + 1}/${EMULATOR_RESTART_LIMIT})`);
+  void heartbeat();
+  void android!
+    .relaunch()
+    .then(() => {
+      state.devicesReady = true;
+      state.preparing = false;
+      void heartbeat();
+    })
+    .catch((err) => shutdown(`Android emulator relaunch failed: ${message(err)}`.slice(0, 200), 1));
+  return null;
 }
 
 // ---------------------------------------------------------------------------
 // Supervision loop
 // ---------------------------------------------------------------------------
 
-/** Restart dead children within their budgets. Returns false if exhausted. */
-async function handleDeadChildren(): Promise<boolean> {
-  if (state.children.proxy?.dead) {
-    const c = state.children.proxy;
-    if (c.restarts >= PROXY_RESTART_LIMIT) {
-      error(`agent-device proxy died ${PROXY_RESTART_LIMIT + 1} times — exiting`);
-      return false;
-    }
-    warn(`restarting agent-device proxy (${c.restarts + 1}/${PROXY_RESTART_LIMIT})`);
-    state.children.proxy = spawnProxy();
-    state.children.proxy.restarts = c.restarts + 1;
+async function restartProxy(): Promise<string | null> {
+  const old = state.children.proxy!;
+  const used = restartsUsed(old);
+  if (used >= PROXY_RESTART_LIMIT)
+    return `agent-device proxy kept dying (${PROXY_RESTART_LIMIT} restarts used)`;
+  // The replacement binds the same port: the old process must be gone first.
+  await stopChild(old);
+  warn(`restarting agent-device proxy (${used + 1}/${PROXY_RESTART_LIMIT})`);
+  const next = spawnProxy(used + 1);
+  state.children.proxy = next;
+  try {
     await waitForProxy(`http://127.0.0.1:${PROXY_PORT}/agent-device/health`);
+  } catch (err) {
+    // A failed restart: the next supervision pass tries again within budget.
+    warn(`restarted agent-device proxy is unhealthy: ${message(err).slice(0, 200)}`);
+    await stopChild(next);
+  }
+  return null;
+}
+
+async function restartTunnel(): Promise<string | null> {
+  const old = state.children.tunnel!;
+  const used = restartsUsed(old);
+  if (used >= TUNNEL_RESTART_LIMIT)
+    return `cloudflared kept dying (${TUNNEL_RESTART_LIMIT} restarts used)`;
+  await stopChild(old);
+  warn(`restarting cloudflared${state.named ? "" : " (new tunnel URL)"}`);
+  const t = spawnTunnel(used + 1);
+  state.children.tunnel = t.child;
+  try {
+    const newUrl = await t.url;
+    maskTunnel(newUrl);
+    state.tunnelUrl = newUrl;
+    // A runner's DNS/egress is not an authoritative test of a tunnel client
+    // can reach. The CLI validates public readiness before returning it.
+    // URL changed → re-register so the API hands out the fresh tunnel.
+    await register();
+    info("tunnel re-registered with new URL");
+  } catch (err) {
+    error(`tunnel restart failed: ${String(err).slice(0, 300)}`);
+    return `tunnel restart failed: ${message(err).slice(0, 150)}`;
+  }
+  return null;
+}
+
+/** Restart dead children within their budgets. Returns a shutdown reason if exhausted. */
+async function handleDeadChildren(): Promise<string | null> {
+  if (state.children.proxy?.dead) {
+    const failure = await restartProxy();
+    if (failure) return failure;
   }
   if (state.children.tunnel?.dead) {
-    const c = state.children.tunnel;
-    if (c.restarts >= 3) {
-      error("cloudflared exhausted its restart budget — exiting");
-      return false;
-    }
-    warn(`restarting cloudflared${state.named ? "" : " (new tunnel URL)"}`);
-    const t = spawnTunnel();
-    state.children.tunnel = t.child;
-    t.child.restarts = c.restarts + 1;
-    try {
-      const newUrl = await t.url;
-      addMask(newUrl);
-      state.tunnelUrl = newUrl;
-      // A runner's DNS/egress is not an authoritative test of a tunnel client
-      // can reach. The CLI validates public readiness before returning it.
-      // URL changed → re-register so the API hands out the fresh tunnel.
-      await register();
-      info("tunnel re-registered with new URL");
-    } catch (err) {
-      error(`tunnel restart failed: ${String(err).slice(0, 300)}`);
-      return false;
-    }
+    const failure = await restartTunnel();
+    if (failure) return failure;
   }
-  return true;
+  // Death during a boot is the boot's failure; only a booted emulator is recovered.
+  const emulator = state.children.emulator;
+  if (emulator?.dead && android && state.devicesReady) return recoverEmulator(emulator);
+  return null;
 }
 
 /**
@@ -472,15 +682,10 @@ async function tunnelStaysDead(): Promise<boolean> {
 }
 
 /**
- * Local proxy liveness. The proxy's embedded daemon can die while the proxy
- * process stays up — /health then returns {"ok":false,"error":"fetch failed"}
- * forever (observed on GH macOS runners ~60-90s after a client connects).
- * Proxy restart re-spawns its child daemon.
- */
-/**
  * agent-device swallows daemon crashes into ndjson diagnostics under
  * ~/.agent-device/logs — print the tail of the freshest ones into our step
- * log so daemon deaths are diagnosable from the Actions UI.
+ * log so daemon deaths are diagnosable from the Actions UI. Lines go through
+ * the secret filter like any other child output.
  */
 async function dumpRecentDaemonLogs(): Promise<void> {
   const res = await run(
@@ -495,12 +700,18 @@ async function dumpRecentDaemonLogs(): Promise<void> {
     const tail = await run(["tail", "-n", "30", file], { timeoutMs: 10_000 });
     if (tail.stdout.trim()) {
       for (const line of tail.stdout.trimEnd().split("\n")) {
-        info(`[agent-device log ${file}] ${line}`);
+        relayFiltered(`agent-device log ${file}`, line);
       }
     }
   }
 }
 
+/**
+ * Local proxy liveness. The proxy's embedded daemon can die while the proxy
+ * process stays up — /health then returns {"ok":false,"error":"fetch failed"}
+ * forever (observed on GH macOS runners ~60-90s after a client connects).
+ * Proxy restart re-spawns its child daemon.
+ */
 async function proxyUpstreamDead(): Promise<boolean> {
   try {
     const res = await fetch(`http://127.0.0.1:${PROXY_PORT}/agent-device/health`, {
@@ -512,10 +723,14 @@ async function proxyUpstreamDead(): Promise<boolean> {
   }
 }
 
+async function checkHardExit(): Promise<void> {
+  if (Date.now() - state.bootedAt >= HARD_EXIT_MINUTES * 60_000)
+    await shutdown(`hard exit after ${HARD_EXIT_MINUTES} minutes`, 0);
+}
+
 async function supervise(): Promise<never> {
-  let heartbeatFailures = 0;
   let proxyProbeFailures = 0;
-  let lastDeviceSeenAt = Date.now(); // idle clock starts at boot
+  let lastDeviceSeenAt = Date.now(); // idle clock starts once the run is live
   for (;;) {
     await interruptibleSleep(HEARTBEAT_INTERVAL_SECONDS * 1000);
     // A cold boot/runner build is real work, not an idle or wedged daemon.
@@ -524,8 +739,8 @@ async function supervise(): Promise<never> {
     if (activity) lastDeviceSeenAt = Math.max(lastDeviceSeenAt, activity.lastActivityAt);
 
     // --- children ---
-    const childrenOk = await handleDeadChildren();
-    if (!childrenOk) await shutdown("child process died twice", 1);
+    const failure = await handleDeadChildren();
+    if (failure) await shutdown(failure, 1);
 
     // --- tunnel liveness (edge-side; process can be a zombie) ---
     // Quick tunnels hold a single edge connection, so every edge drop is a
@@ -535,10 +750,9 @@ async function supervise(): Promise<never> {
       warn("tunnel unreachable at edge; waiting for cloudflared to reconnect");
       if (await tunnelStaysDead()) {
         warn("killing zombie cloudflared to force reconnect");
-        const t = state.children.tunnel!;
-        t.dead = true; // guarantee handleDeadChildren sees it even if exit is slow
-        t.proc.kill("SIGTERM");
-        if (!(await handleDeadChildren())) await shutdown("tunnel restart failed", 1);
+        state.children.tunnel!.dead = true; // restartTunnel stops it and awaits its exit
+        const restart = await handleDeadChildren();
+        if (restart) await shutdown(restart, 1);
       } else info("tunnel reconnected");
     }
 
@@ -550,10 +764,9 @@ async function supervise(): Promise<never> {
         warn("killing wedged agent-device proxy to force restart");
         proxyProbeFailures = 0;
         await dumpRecentDaemonLogs();
-        const p = state.children.proxy!;
-        p.dead = true;
-        p.proc.kill("SIGTERM");
-        if (!(await handleDeadChildren())) await shutdown("proxy restart failed", 1);
+        state.children.proxy!.dead = true; // restartProxy stops it and awaits its exit
+        const restart = await handleDeadChildren();
+        if (restart) await shutdown(restart, 1);
       }
     } else {
       proxyProbeFailures = 0;
@@ -564,49 +777,29 @@ async function supervise(): Promise<never> {
     // Unknown inventory is not evidence that a session is idle. Hard exit
     // remains authoritative even if inventory is unavailable.
     if (deviceCount === null || deviceCount > 0) lastDeviceSeenAt = Date.now();
-    const activeDevices = deviceCount ?? 0;
+    state.activeDevices = deviceCount ?? 0;
     // A request can start while probes/device inventory are awaited.
     const latestActivity = state.gateway?.activity();
     busy = (latestActivity?.inFlight ?? 0) > 0;
     if (latestActivity)
       lastDeviceSeenAt = Math.max(lastDeviceSeenAt, latestActivity.lastActivityAt);
+    // Device preparation and emulator recovery are work, not idleness.
+    if (state.preparing) lastDeviceSeenAt = Date.now();
 
     // --- exits (checked before heartbeat so a dead run doesn't beat one more time) ---
     const uptimeMin = (Date.now() - state.bootedAt) / 60_000;
-    if (uptimeMin >= HARD_EXIT_MINUTES) {
-      await shutdown(`hard exit after ${HARD_EXIT_MINUTES} minutes`, 0);
-    }
+    await checkHardExit();
     const idleMin = (Date.now() - lastDeviceSeenAt) / 60_000;
     if (!busy && idleMin >= IDLE_EXIT_MINUTES) {
       await shutdown(`idle exit — no active devices for ${IDLE_EXIT_MINUTES} minutes`, 0);
     }
 
     // --- heartbeat ---
-    try {
-      await api().heartbeat({
-        ghRunId: state.ghRunId,
-        activeDevices,
-        androidReady: state.androidReady,
-      });
-      heartbeatFailures = 0;
+    if (await heartbeat())
       info(
-        `heartbeat ok — devices=${activeDevices} android=${state.androidReady} ` +
+        `heartbeat ok — devices=${state.activeDevices} ready=${state.devicesReady} ` +
           `idle=${idleMin.toFixed(1)}m busy=${busy} up=${uptimeMin.toFixed(1)}m`,
       );
-    } catch (err) {
-      if (err instanceof HttpError && (err.status === 401 || err.status === 403)) {
-        error("heartbeat unauthorized — SIMBOX_TOKEN revoked, exiting");
-        await shutdown("token revoked", 1);
-      }
-      heartbeatFailures++;
-      warn(
-        `heartbeat failed (${heartbeatFailures}/${HEARTBEAT_FAILURE_LIMIT}): ${String(err).slice(0, 200)}`,
-      );
-      if (heartbeatFailures >= HEARTBEAT_FAILURE_LIMIT) {
-        error("too many consecutive heartbeat failures — exiting");
-        await shutdown("heartbeat failures", 1);
-      }
-    }
   }
 }
 
@@ -618,15 +811,21 @@ async function main(): Promise<void> {
   // 1. Env
   if (!state.token) {
     error("SIMBOX_TOKEN is required (repo secret). Set it in the workflow's `with: token:`.");
-    process.exit(1);
+    exit(1);
   }
   if (!Bun.env.GITHUB_RUN_ID || Number.isNaN(Number(Bun.env.GITHUB_RUN_ID))) {
     error("GITHUB_RUN_ID missing or invalid — this agent must run inside GitHub Actions.");
-    process.exit(1);
+    exit(1);
   }
   state.ghRunId = Number(Bun.env.GITHUB_RUN_ID);
-  if (process.platform === "linux") await configureAndroidEnvironment();
   addMask(state.token); // belt-and-braces; GH already masks repo secrets
+  // The repo secret stays in this process: npm, agent-device, cloudflared,
+  // the emulator and the preview hub never inherit it.
+  delete Bun.env.SIMBOX_TOKEN;
+  if (state.runId && !RUN_ID_RE.test(state.runId)) {
+    warn("ignoring malformed SIMBOX_RUN_ID");
+    state.runId = "";
+  }
 
   // Register signal handlers early so a SIGTERM during provisioning still
   // cleans up children instead of orphaning them.
@@ -634,30 +833,52 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => void shutdown("SIGINT", 0));
 
   info(
-    `simbox-agent v${pkg.version} — run ${state.ghRunId} (attempt ${state.ghRunAttempt}), api ${state.apiUrl}`,
+    `simbox-agent v${pkg.version} — run ${state.ghRunId} (attempt ${state.ghRunAttempt})` +
+      `${state.runId ? `, simbox run ${state.runId}` : ""}${stage.staged ? ", staged" : ""}, api ${state.apiUrl}`,
   );
 
-  state.device = await requestRunConfig();
-  if (state.device) info(`device requested: ${JSON.stringify(state.device)}`);
-  if (process.platform === "darwin") await quietHost();
+  // 2. What to prepare. The API's platform wins; a host that cannot run it
+  // fails here rather than serving the wrong thing.
+  const config = await requestRunConfig();
+  state.platform = config?.platform ?? hostPlatform(process.platform, Bun.env.SIMBOX_PLATFORM);
+  state.device = config?.device ?? null;
+  if (!state.runId && config?.runId && RUN_ID_RE.test(config.runId)) state.runId = config.runId;
+  const mismatch = hostMismatch(state.platform, process.platform);
+  if (mismatch) {
+    error(mismatch);
+    await shutdown(mismatch, 1);
+  }
+  info(
+    `platform ${state.platform}; device ${state.device ? JSON.stringify(state.device) : "runner default"}`,
+  );
 
-  // agent-device resolves its toolchain once, so the Xcode switch has to land
-  // before its daemon starts. A requested device the runner cannot provide
-  // fails the run rather than silently serving the default phone.
-  if (process.platform === "darwin" && (state.device?.xcode || state.device?.foldable)) {
-    const foldable = state.device.foldable === true;
-    try {
-      await selectXcode({ version: state.device.xcode, foldable });
-      if (foldable) state.foldableUdid = await ensureFoldableSimulator();
-    } catch (err) {
-      error(String(err).slice(0, 500));
-      await shutdown(String(err instanceof Error ? err.message : err).slice(0, 200), 1);
+  // 3. Choose the device before installing anything. agent-device resolves
+  // its toolchain once, so iOS's Xcode switch has to land before its daemon
+  // starts. A requested device the runner cannot provide fails the run
+  // rather than silently serving another one.
+  if (state.platform === "ios") {
+    await quietHost();
+    adapter = createIOSAdapter({ agentDeviceBin: () => state.agentDeviceBin });
+  } else {
+    await configureAndroidEnvironment();
+    adapter = android = createAndroidAdapter({
+      onEmulator: (proc) => {
+        state.children.emulator = track("Android emulator", proc, state.emulatorRestarts);
+      },
+    });
+  }
+  let choice: DeviceChoice | null = null;
+  try {
+    choice = await adapter.select(state.device);
+  } catch (err) {
+    if (state.device || state.platform === "android") {
+      error(message(err).slice(0, 500));
+      await shutdown(message(err).slice(0, 200), 1);
     }
+    warn(`could not choose the default simulator (${message(err)}); warming any available iPhone`);
   }
 
-  // 2. Provision: agent-device + cloudflared in parallel; Android prep runs
-  // fully in the background and must never block iOS bring-up (it handles all
-  // its own errors internally).
+  // 4. Provision: agent-device + cloudflared in parallel.
   const [agentDeviceBin, cloudflaredBin] = await Promise.all([
     installAgentDevice(),
     installCloudflared(),
@@ -665,22 +886,22 @@ async function main(): Promise<void> {
   state.agentDeviceBin = agentDeviceBin;
   state.cloudflaredBin = cloudflaredBin;
 
-  // 3. daemon token — mask before any use.
+  // 5. daemon token — mask before any use.
   state.daemonToken = randomBytes(32).toString("hex");
   addMask(state.daemonToken);
-  // Filter by URL *pattern* (not just the known value) so the very stderr line
-  // the URL is parsed from is never relayed to the log.
+  // Filter by hostname *pattern* (not just the known value) so the very stderr
+  // line the URL is parsed from is never relayed to the log.
   // A named tunnel's cloudflared logs its ingress hostname; never relay it.
   setSecretFilter(
     (line) =>
       line.includes(state.daemonToken) ||
-      TUNNEL_URL_RE.test(line) ||
+      QUICK_TUNNEL_HOST_RE.test(line) ||
       (!!state.named &&
         (line.includes(new URL(state.named.tunnelUrl).hostname) ||
           line.includes(state.named.connectorToken))),
   );
 
-  // 4. agent-device proxy
+  // 6. agent-device proxy
   state.children.proxy = spawnProxy();
   state.gateway = startGateway({
     port: PROXY_PORT,
@@ -693,28 +914,22 @@ async function main(): Promise<void> {
   await waitForProxy(`http://127.0.0.1:${PROXY_PORT}/agent-device/health`);
   info(`agent-device gateway on 127.0.0.1:${PROXY_PORT} (pid ${state.children.proxy.proc.pid})`);
 
-  // A Mac runner exists only for iOS: boot its iPhone and build XCTest before
-  // the tunnel starts, so the first commands neither race that work for 3 vCPUs
-  // nor land in the simulator's first-boot storm. Failure only warns. Android
-  // (Linux) preparation stays in the background and never gates registration.
-  const platforms = preparePlatforms({
-    warmIOS: process.platform === "darwin",
-    ios: () => prepareIOS(state.agentDeviceBin, state.foldableUdid),
-    android: () =>
-      prepareAndroid(
-        { foldable: state.device?.foldable === true },
-        () => {
-          state.androidReady = true;
-        },
-        (proc) => {
-          state.children.emulator = track("Android emulator", proc);
-        },
-      ),
-    warn,
-  });
-  if (process.platform === "darwin") await platforms;
+  // 7. Boot the device. iOS boots its simulator and builds XCTest before the
+  // tunnel starts, so the first commands neither race that work for 3 vCPUs
+  // nor land in the simulator's first-boot storm. A legacy (single-step)
+  // Android run goes live while its emulator boots; staged runs wait.
+  const booting = bootDevices(choice);
+  if (state.platform === "ios" || stage.staged) await booting;
 
-  // 5. cloudflared — a named tunnel when the API provisions one, else a quick
+  // 8. Staged: hand over to the workflow's steps until the serve step starts.
+  if (stage.staged) {
+    stage.markReady();
+    info("devices ready; waiting for the serve step");
+    await stage.waitForGo({ check: checkHardExit });
+    info("serve step started");
+  }
+
+  // 9. cloudflared — a named tunnel when the API provisions one, else a quick
   // tunnel. Either way, wait for the URL.
   state.named = await requestNamedTunnel();
   let tunnel = spawnTunnel();
@@ -724,8 +939,7 @@ async function main(): Promise<void> {
   } catch (err) {
     if (state.named) {
       warn(`named tunnel did not connect (${String(err).slice(0, 200)}); using a quick tunnel`);
-      tunnel.child.dead = true;
-      tunnel.child.proc.kill("SIGTERM");
+      await stopChild(tunnel.child);
       state.named = null;
       tunnel = spawnTunnel();
       state.children.tunnel = tunnel.child;
@@ -740,22 +954,28 @@ async function main(): Promise<void> {
       await shutdown("no tunnel URL", 1);
     }
   }
-  addMask(state.tunnelUrl);
+  maskTunnel(state.tunnelUrl);
   // Never hand out a named hostname before its DNS record is served: an early
   // lookup caches NXDOMAIN on the client's resolver for half an hour.
-  if (state.named && !(await waitForAuthoritativeDns(new URL(state.tunnelUrl).hostname)))
-    warn("named tunnel DNS not visible on its nameservers yet; registering anyway");
+  if (state.named) {
+    const dns = await waitForAuthoritativeDns(new URL(state.tunnelUrl).hostname);
+    if (dns === "missing")
+      warn("named tunnel DNS not visible on its nameservers yet; registering anyway");
+    else if (dns === "unverified")
+      info("named tunnel DNS not verified (no dig or nameservers); registering anyway");
+  }
   // The local origin is ready; public DNS/edge readiness is checked by the
   // client. Hairpin probes from GH runners can fail while clients can reach it.
   info("tunnel up (url registered + masked)");
 
-  // 6. Register
+  // 10. Register, then report readiness right away rather than a minute later.
   await register().catch(async (err) => {
     await shutdown(`registration failed: ${String(err).slice(0, 200)}`, 1);
     throw err; // unreachable, keeps types happy
   });
+  await heartbeat();
 
-  // 7. Supervision
+  // 11. Supervision
   await supervise();
 }
 
@@ -764,5 +984,5 @@ async function main(): Promise<void> {
 setInterval(() => {}, 10_000);
 main().catch(async (err) => {
   error(`fatal: ${String(err).slice(0, 500)}`);
-  await shutdown("fatal boot error", 1);
+  await shutdown(`fatal boot error: ${message(err).slice(0, 150)}`, 1);
 });

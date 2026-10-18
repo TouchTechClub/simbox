@@ -3,6 +3,7 @@ import type { PublicRun, Repo, RepoStatusResponse, RunSummary, User } from "@sim
 import type { RunnerSettings, RunnerPreferences, RunnerTarget } from "@simbox/shared/runners";
 import type { PreviewInventory, PreviewAccess } from "@simbox/shared/preview";
 import type { DeviceProfile } from "@simbox/shared/device-profile";
+import type { BootedDevice } from "@simbox/shared/device-catalog";
 
 /**
  * API base URL. Same-origin is NOT assumed in prod: the API lives on
@@ -154,6 +155,7 @@ function normalizeRepo(raw: unknown): Repo | null {
     state: str(r.state) as Repo["state"],
     prUrl: (r.prUrl ?? r.pr_url ?? null) as string | null,
     createdAt: num(r.createdAt ?? r.created_at),
+    workflowVersion: num(r.workflowVersion ?? 1),
   };
 }
 
@@ -167,10 +169,14 @@ function normalizeRun(raw: unknown): PublicRun | null {
     platform: r.platform === "android" ? "android" : "ios",
     runner: (r.runner ?? null) as RunnerTarget | null,
     device: (r.device ?? null) as DeviceProfile | null,
+    bootedDevice: (r.bootedDevice ?? null) as BootedDevice | null,
     tunnelUrl: (r.tunnelUrl ?? r.tunnel_url ?? null) as string | null,
     daemonToken: (r.daemonToken ?? r.daemon_token ?? null) as string | null,
     activeDevices: num(r.activeDevices ?? r.active_devices),
     androidReady: bool(r.androidReady ?? r.android_ready),
+    devicesReady: bool(
+      r.devicesReady ?? (r.state === "live" && (r.platform !== "android" || r.androidReady)),
+    ),
     createdAt: num(r.createdAt ?? r.created_at),
     expiresAt: (r.expiresAt ?? r.expires_at ?? null) as number | null,
     endReason: (r.endReason ?? r.end_reason ?? null) as string | null,
@@ -186,6 +192,7 @@ function normalizeRunSummary(raw: unknown): RunSummary {
     platform: r.platform === "android" ? "android" : "ios",
     runner: (r.runner ?? null) as RunnerTarget | null,
     device: (r.device ?? null) as DeviceProfile | null,
+    bootedDevice: (r.bootedDevice ?? null) as BootedDevice | null,
     activeDevices: num(r.activeDevices ?? r.active_devices),
     createdAt: num(r.createdAt ?? r.created_at),
     endedAt: (r.endedAt ?? r.ended_at ?? null) as number | null,

@@ -17,40 +17,5 @@ export const HEARTBEAT_INTERVAL_SECONDS = 60;
 /** Soft advisory cap on devices per run (enforced at ensure time). */
 export const MAX_DEVICES_PER_RUN = 3;
 
-/**
- * Canonical workflow committed to the user's repo.
- * Keep minimal — api_url override lives in the composite action default,
- * not here, so the committed file stays stable across environments.
- *
- * Use the stable macOS image by default. Users requiring preview-only device
- * types can opt into `xcode-27` in their workflow, accepting preview instability.
- */
-export const WORKFLOW_YAML = `name: simbox
-
-on:
-  workflow_dispatch:
-    inputs:
-      platform:
-        type: choice
-        options: [ios, android]
-        default: ios
-        description: Device platform (Android uses Linux/KVM)
-      runner_labels:
-        type: string
-        default: ""
-        description: JSON array of runner labels (empty uses platform default)
-
-jobs:
-  simbox:
-    runs-on: \${{ fromJSON(inputs.runner_labels || (inputs.platform == 'android' && '["ubuntu-latest"]' || '["macos-latest"]')) }}
-    timeout-minutes: 350
-    steps:
-      - name: Simbox agent
-        uses: TouchTechClub/runner@v1
-        with:
-          token: \${{ secrets.SIMBOX_TOKEN }}
-          platform: \${{ inputs.platform }}
-`;
-
 /** Commit message used when installing the workflow file. */
 export const WORKFLOW_COMMIT_MESSAGE = "chore: add simbox workflow";

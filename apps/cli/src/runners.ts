@@ -1,8 +1,10 @@
 import {
   RUNNER_PRESETS,
+  formatDeviceProfile,
   formatRunner,
   parseRunnerInput,
   type DevicePlatform,
+  type LayeredDevice,
   type RunnerSettings,
 } from "@simbox/shared";
 import { runnerSettings, updateRunners, runnerDiagnostics } from "./client.js";
@@ -24,13 +26,33 @@ export function printRunnerSettings(settings: RunnerSettings, json = false): voi
     console.log(
       `  repository: ${settings.repository?.[platform] ? formatRunner(settings.repository[platform]) : "inherit account"}`,
     );
+    // Older APIs did not report device defaults.
+    const device = settings.devices?.effective?.[platform];
+    if (device) console.log(`  device: ${formatLayeredDevice(device, platform)}`);
   }
   console.log(
     "Settings apply to future runs only. Run `simbox repair` once to upgrade older workflows.",
   );
   console.log(
+    "Device defaults: `simbox devices set <platform> --device <model> --os <version> --scope account|repo`.",
+  );
+  console.log(
     "Blacksmith requires its GitHub App on the repository and bills separately. Custom runners need Linux x64/KVM or macOS ARM64/Xcode.",
   );
+}
+
+/** "iPhone 16 Pro, iOS 18.4 (model: repository, os: account)" */
+export function formatLayeredDevice(layered: LayeredDevice, platform: DevicePlatform): string {
+  if (!layered.device) return "runner default";
+  const sources = Object.entries(layered.sources)
+    .filter(([, source]) => source !== undefined)
+    .map(([field, source]) => `${field}: ${source}`);
+  const unset = [
+    layered.device.model === undefined && !layered.device.foldable && "model",
+    layered.device.os === undefined && "os",
+  ].filter((field): field is string => typeof field === "string");
+  const parts = [...sources, ...unset.map((field) => `${field}: runner default`)];
+  return `${formatDeviceProfile(layered.device, platform)} (${parts.join(", ")})`;
 }
 
 export async function cmdRunnersShow(json = false): Promise<void> {

@@ -131,6 +131,10 @@ async function seedDemo(env: Env): Promise<void> {
       repo_full_name: "demo-user/my-ios-app",
       gh_run_id: 18234567890,
       state: "live",
+      platform: "ios",
+      runner: { labels: ["macos-latest"] },
+      device: { model: "iPhone 16 Pro", os: "18.4" },
+      booted_device: { model: "iPhone 16 Pro", os: "18.4", name: "iPhone 16 Pro" },
       tunnel_url: "https://demo-tunnel.trycloudflare.com",
       daemon_token: "demo_daemon_token_9f8e7d6c5b",
       active_devices: 1,
@@ -139,6 +143,22 @@ async function seedDemo(env: Env): Promise<void> {
       dispatched_at: now - 900,
       live_at: now - 720,
       expires_at: now + 5 * 3600,
+    })
+    .onConflictDoNothing();
+  // A second, concurrent Android run still booting.
+  await db
+    .insert(runs)
+    .values({
+      id: "demo-run-0002",
+      user_id: DEMO_USER_ID,
+      repo_full_name: "demo-user/my-ios-app",
+      gh_run_id: 18234567891,
+      state: "booting",
+      platform: "android",
+      runner: { labels: ["ubuntu-latest"] },
+      device: { model: "pixel_8", os: "35" },
+      created_at: now - 120,
+      dispatched_at: now - 120,
     })
     .onConflictDoNothing();
   demoSeeded = true;

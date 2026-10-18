@@ -1,7 +1,7 @@
 # TouchTechClub/runner — composite action
 
-Boots on-demand iOS simulators and Android emulators on a `macos-latest`
-GitHub Actions job, exposes them through a Cloudflare quick tunnel, and lets
+Boots on-demand iOS simulators (macOS) and Android emulators (Linux/KVM) on a
+GitHub Actions job, exposes them through a Cloudflare tunnel, and lets
 you drive them from your local machine with
 [`agent-device`](https://oss.callstack.com/agent-device).
 
@@ -11,11 +11,14 @@ This repo contains only the composite action that gets published as
 
 ## Usage
 
-This step is normally installed for you (`simbox init` commits
-`.github/workflows/simbox.yml` to your repo). Manually:
+This workflow is normally installed for you (`simbox init` commits
+`.github/workflows/simbox.yml` to your repo, and the dashboard or
+`simbox workflow` edits it). It runs the action three times, so your own steps
+can run between the stages:
 
 ```yaml
 name: simbox
+run-name: "simbox ${{ inputs.platform }} ${{ inputs.simbox_run }}"
 on:
   workflow_dispatch:
     inputs:
@@ -26,17 +29,40 @@ on:
       runner_labels:
         type: string
         default: ""
+      simbox_run:
+        type: string
+        default: ""
 
 jobs:
   simbox:
     runs-on: ${{ fromJSON(inputs.runner_labels || (inputs.platform == 'android' && '["ubuntu-latest"]' || '["macos-latest"]')) }}
-    timeout-minutes: 350
+    timeout-minutes: 360
     steps:
-      - name: Simbox agent
-        uses: TouchTechClub/runner@v1
+      - uses: TouchTechClub/runner@v1
         with:
-          token: ${{ secrets.SIMBOX_TOKEN }}
+          step: prepare
           platform: ${{ inputs.platform }}
+      - uses: TouchTechClub/runner@v1
+        with:
+          step: start
+          platform: ${{ inputs.platform }}
+          token: ${{ secrets.SIMBOX_TOKEN }}
+          run_id: ${{ inputs.simbox_run }}
+      # Devices are booted but not reachable yet: install apps, seed data...
+      - uses: TouchTechClub/runner@v1
+        with:
+          step: serve
+          platform: ${{ inputs.platform }}
+```
+
+Without `step`, the action does everything in one step (`step: all`), exactly
+as older workflows expect:
+
+```yaml
+- uses: TouchTechClub/runner@v1
+  with:
+    token: ${{ secrets.SIMBOX_TOKEN }}
+    platform: ${{ inputs.platform }}
 ```
 
 Then from your machine:
@@ -57,47 +83,62 @@ android --device simbox`, followed by `simbox exec snapshot -i`.
 ## Inputs
 
 `platform` optionally declares `ios` or `android` (empty infers the host).
-The action fails before binary download on the wrong OS/architecture or missing
-tools. Linux requires x64/KVM/Java/Android SDK command-line tools; macOS requires
-ARM64/Xcode. Existing KVM access is preserved; otherwise passwordless sudo is
-required to grant it. See [runner settings](../docs/RUNNERS-AND-SKILLS.md) for
-account defaults, repository overrides, Blacksmith prerequisites and custom labels.
+The prepare stage fails before binary download on the wrong OS/architecture or
+missing tools. Linux requires x64/KVM/Java/Android SDK command-line tools; macOS
+requires ARM64/Xcode. Existing KVM access is preserved; otherwise passwordless
+sudo is required to grant it. See [runner settings](../docs/RUNNERS-AND-SKILLS.md)
+for account defaults, repository overrides, Blacksmith prerequisites and custom labels.
 
-| Input      | Required | Default                             | Description                                                   |
-| ---------- | -------- | ----------------------------------- | ------------------------------------------------------------- |
-| `token`    | yes      | —                                   | `SIMBOX_TOKEN` repo secret                                    |
-| `api_url`  | no       | `https://api.simbox.touchtech.club` | API base URL (staging override)                               |
-| `version`  | no       | `v1`                                | Release tag of the agent tarball to download                  |
-| `warm_ios` | no       | `false`                             | Ignored since v0.4.10: iOS runs always warm before going live |
+| Input      | Required   | Default                             | Description                                                    |
+| ---------- | ---------- | ----------------------------------- | -------------------------------------------------------------- |
+| `step`     | no         | `all`                               | `prepare`, `start`, `serve`, or `all` (one step)               |
+| `token`    | start, all | —                                   | `SIMBOX_TOKEN` repo secret                                     |
+| `run_id`   | no         | `""`                                | Run id Simbox dispatched (`simbox_run`); empty for manual runs |
+| `platform` | no         | `""`                                | `ios` or `android`; empty infers the host                      |
+| `api_url`  | no         | `https://api.simbox.touchtech.club` | API base URL (staging override)                                |
+| `version`  | no         | this action's release tag           | Agent release to download; must match the embedded sha256      |
+| `warm_ios` | no         | `false`                             | Ignored since v0.4.10: iOS runs always warm before going live  |
 
-## What the step does
+## What the stages do
 
-1. Downloads `simbox-agent-darwin-arm64.tar.gz` or `simbox-agent-linux-amd64.tar.gz` from the pinned
-   `TouchTechClub/simbox` GitHub release (`version` input).
-2. Verifies its sha256 against the digest embedded in this `action.yml`
-   (`shasum -a 256 -c`) — fails the job on mismatch.
-3. Untars and runs `simbox-agent`, which:
-   - installs `agent-device` + `cloudflared` (versions pinned in the binary),
-   - on Linux, installs and headlessly boots the Android AVD (`android_ready` requires boot completion),
-   - on macOS, boots the run's iPhone and builds XCTest before the tunnel starts,
-   - starts `agent-device proxy` on `127.0.0.1:4311`, with an activity-aware
-     gateway on `127.0.0.1:4310` behind a trycloudflare tunnel,
-   - registers `tunnel_url` + a per-run `daemon_token` with the API over TLS
-     (`Authorization: Bearer SIMBOX_TOKEN`) — neither ever hits the logs,
-   - waits for a healthy local proxy before registration; the CLI checks public tunnel readiness,
-   - streams JSON-RPC keepalives during long commands to avoid Cloudflare 524s,
-   - heartbeats every 60s; authenticated in-flight RPCs postpone idle exit
-     (each request is bounded to 10 minutes); exits after 15 min idle or 5h45m uptime (clean
-     shutdown before GitHub's 6h limit → green checkmark).
+- **prepare** checks the runner, downloads `simbox-agent-darwin-arm64.tar.gz` or
+  `simbox-agent-linux-amd64.tar.gz` from the pinned `TouchTechClub/simbox`
+  release (`version` input) into `$RUNNER_TEMP/simbox`, verifies its sha256
+  against the digest embedded in this `action.yml` (`shasum -a 256 -c`), and
+  records the job's start time for the agent's hard-exit clock.
+- **start** launches `simbox-agent` in the background. It reads the run's
+  platform and device from the API, installs `agent-device` + `cloudflared`
+  (versions pinned in the binary), starts `agent-device proxy` on
+  `127.0.0.1:4311` behind an activity-aware gateway on `127.0.0.1:4310`, and
+  boots the requested simulator (building XCTest) or Android emulator. A
+  requested device or OS the runner cannot provide fails the step with the
+  list of what it offers. The step streams the agent's log and finishes once
+  the device is booted; nothing is reachable yet.
+- **serve** lets the agent open the tunnel and register `tunnel_url` + a
+  per-run `daemon_token` with the API over TLS (`Authorization: Bearer
+SIMBOX_TOKEN`) — neither ever hits the logs. It streams the agent's log until
+  the run ends, forwards cancellation to the agent so it can deregister, and
+  exits with the agent's exit code.
+- **all** does all of the above in one step, except that an Android emulator
+  keeps booting after the run goes live (`android_ready` reports completion).
+
+While serving, the agent streams JSON-RPC keepalives during long commands to
+avoid Cloudflare 524s and heartbeats every 60s; authenticated in-flight RPCs
+postpone idle exit (each request is bounded to 10 minutes). It exits after 15
+min idle or 5h45m after the job started (clean shutdown before GitHub's 6h
+limit → green checkmark), or with exit 0 when the run is stopped from Simbox.
 
 ## Security notes
 
 - `SIMBOX_TOKEN` is a repo secret — GitHub masks it automatically.
 - The tunnel URL and daemon token are minted in-runner, masked via
   `::add-mask::`, and only ever sent to the API inside the TLS body.
+- `SIMBOX_TOKEN` stays in the agent process: npm, agent-device, cloudflared,
+  the emulator and your own steps never receive it from the agent.
 - The agent tarball is sha256-pinned here; `agent-device`/`cloudflared`
   versions are pinned in the agent's `src/pins.ts`.
-- The tunnel is unguessable (`*.trycloudflare.com`) and every proxied command
+- The tunnel hostname is unguessable (a per-run named tunnel, or a
+  `*.trycloudflare.com` quick tunnel as fallback) and every proxied command
   additionally requires the per-run daemon token.
 
 ## Releasing

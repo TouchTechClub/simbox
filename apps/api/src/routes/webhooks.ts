@@ -1,10 +1,19 @@
 import { Hono } from "hono";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull } from "drizzle-orm";
 import { createDb, schema } from "@simbox/db";
+import { WORKFLOW_PATH } from "@simbox/shared";
 import type { Env } from "../env";
 import { nowSeconds } from "../util";
 import { verifyWebhookSignature } from "../github";
-import { mapWorkflowRun } from "./runs";
+import {
+  bindGithubRun,
+  createLifecycle,
+  finishRun,
+  isTerminal,
+  mapWorkflowRun,
+  runIdFromTitle,
+  setRunState,
+} from "../run-lifecycle";
 
 export const webhookRoutes = new Hono<{ Bindings: Env }>();
 
@@ -29,11 +38,16 @@ interface InstallationReposPayload {
 
 interface WorkflowRunPayload {
   action: string;
+  installation?: { id?: number };
+  repository?: { full_name?: string };
   workflow_run: {
     id: number;
     status: string | null;
     conclusion: string | null;
+    event?: string;
     path?: string;
+    display_title?: string;
+    created_at?: string;
     repository?: { full_name?: string };
   };
 }
@@ -125,56 +139,62 @@ webhookRoutes.post("/webhooks/github", async (c) => {
   if (event === "workflow_run") {
     const p = payload as WorkflowRunPayload;
     const wr = p.workflow_run;
-    if (!wr?.id) return c.json({ ok: true });
+    const fullName = p.repository?.full_name ?? wr?.repository?.full_name;
+    // Only Simbox's own dispatches: other workflows in the repo never touch runs.
+    if (!wr?.id || !fullName || wr.event !== "workflow_dispatch") return c.json({ ok: true });
+    if (wr.path && wr.path !== WORKFLOW_PATH) return c.json({ ok: true });
 
-    let run = await db.select().from(schema.runs).where(eq(schema.runs.gh_run_id, wr.id)).get();
+    const repo = await db
+      .select()
+      .from(schema.repos)
+      .where(eq(schema.repos.full_name, fullName))
+      .get();
+    if (!repo || (p.installation?.id && p.installation.id !== repo.installation_id))
+      return c.json({ ok: true });
+    const ctx = createLifecycle(c.env, (work) => c.executionCtx.waitUntil(work), repo);
 
-    if (!run && wr.repository?.full_name) {
-      // Bind a dispatching run whose gh_run_id was never resolved by the
-      // ensure-time poll (see bindGhRunId).
-      const repo = await db
-        .select()
-        .from(schema.repos)
-        .where(eq(schema.repos.full_name, wr.repository.full_name))
-        .get();
-      if (repo) {
+    let run = await db
+      .select()
+      .from(schema.runs)
+      .where(and(eq(schema.runs.gh_run_id, wr.id), eq(schema.runs.repo_full_name, fullName)))
+      .get();
+
+    if (!run) {
+      const runId = runIdFromTitle(wr.display_title);
+      if (runId) {
+        const candidate = await db
+          .select()
+          .from(schema.runs)
+          .where(and(eq(schema.runs.id, runId), eq(schema.runs.repo_full_name, fullName)))
+          .get();
+        if (candidate) run = (await bindGithubRun(ctx, candidate, repo, wr.id)) ?? undefined;
+      } else if (repo.workflow_version < 2) {
+        // Legacy workflow (no run id in its title): bind only an unambiguous
+        // unbound run dispatched shortly before this one was created.
+        const createdAt = wr.created_at ? Math.floor(Date.parse(wr.created_at) / 1000) : now;
         const unbound = await db
           .select()
           .from(schema.runs)
           .where(
             and(
-              eq(schema.runs.user_id, repo.user_id),
+              eq(schema.runs.repo_full_name, fullName),
               isNull(schema.runs.gh_run_id),
-              eq(schema.runs.state, "dispatching"),
+              inArray(schema.runs.state, ["dispatching", "queued", "closing"]),
+              gte(schema.runs.created_at, createdAt - 600),
             ),
           )
-          .orderBy(desc(schema.runs.created_at))
-          .limit(1)
-          .get();
-        if (unbound) {
-          await db
-            .update(schema.runs)
-            .set({ gh_run_id: wr.id })
-            .where(and(eq(schema.runs.id, unbound.id), isNull(schema.runs.gh_run_id)));
-          run = { ...unbound, gh_run_id: wr.id };
-        }
+          .limit(2)
+          .all();
+        if (unbound.length === 1)
+          run = (await bindGithubRun(ctx, unbound[0]!, repo, wr.id)) ?? undefined;
       }
     }
 
-    if (!run) return c.json({ ok: true });
-
+    if (!run || isTerminal(run.state)) return c.json({ ok: true });
     const next = mapWorkflowRun(wr.status, wr.conclusion, run.state);
-    if (next) {
-      const terminal = next.state === "ended" || next.state === "failed";
-      await db
-        .update(schema.runs)
-        .set({
-          state: next.state,
-          end_reason: next.endReason ?? run.end_reason,
-          ended_at: terminal ? (run.ended_at ?? now) : run.ended_at,
-        })
-        .where(eq(schema.runs.id, run.id));
-    }
+    if (next && isTerminal(next.state))
+      await finishRun(ctx, run, next.state as "ended" | "failed", next.endReason!);
+    else if (next) await setRunState(db, run, next);
     return c.json({ ok: true });
   }
 

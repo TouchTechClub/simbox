@@ -7,6 +7,7 @@ import type {
   RunConfigResponse,
   RunDeregisterRequest,
   RunHeartbeatRequest,
+  RunInventoryRequest,
   RunRegisterRequest,
   RunTunnelRequest,
   RunTunnelResponse,
@@ -19,6 +20,23 @@ export class HttpError extends Error {
   ) {
     super(`HTTP ${status}: ${body.slice(0, 300)}`);
     this.name = "HttpError";
+  }
+}
+
+/**
+ * The API says the run is already over (stopped, ended or replaced): 409
+ * `run_over` from register/heartbeat, or 404 for a run it no longer knows.
+ * Agents exit cleanly instead of counting these as failures.
+ */
+export function runIsOver(err: unknown, options: { notFound?: boolean } = {}): boolean {
+  if (!(err instanceof HttpError)) return false;
+  if (err.status === 404) return options.notFound === true;
+  if (err.status !== 409) return false;
+  try {
+    const body = JSON.parse(err.body) as { error?: unknown };
+    return body?.error === undefined || body.error === "run_over";
+  } catch {
+    return true;
   }
 }
 
@@ -72,5 +90,9 @@ export class ApiClient {
 
   deregister(body: RunDeregisterRequest): Promise<Response> {
     return this.post("/v1/runs/deregister", body, 10_000);
+  }
+
+  inventory(body: RunInventoryRequest): Promise<Response> {
+    return this.post("/v1/runs/inventory", body, 15_000);
   }
 }

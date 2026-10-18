@@ -60,6 +60,7 @@ echo "==> Rendering action.yml"
 sed \
   -e "s/{{SHA256}}/$SHA/g" \
   -e "s/{{SHA256_LINUX}}/$LINUX_SHA/g" \
+  -e "s/{{VERSION}}/$TAG/g" \
   -e '/^# GENERATED FILE/d' \
   "$SCRIPT_DIR/action.yml.template" \
   > "$SCRIPT_DIR/action.yml.tmp"
@@ -74,7 +75,8 @@ rm "$SCRIPT_DIR/action.yml.tmp"
 
 echo ""
 echo "Done. Next steps:"
-echo "  1. Publish this directory to the TouchTechClub/runner repo and tag it:"
+echo "  1. Create the $TAG release FIRST (step 2): action.yml downloads from it."
+echo "     Then publish this directory to the TouchTechClub/runner repo and tag it:"
 echo "       rsync -a --delete $SCRIPT_DIR/ /path/to/runner/"
 echo "       cd /path/to/runner && git add -A && git commit -m 'simbox $TAG'"
 echo "       git tag -f v1 && git tag $TAG && git push --tags -f origin v1 $TAG"

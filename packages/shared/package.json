@@ -8,7 +8,9 @@
     "./constants": "./src/constants.ts",
     "./runners": "./src/runners.ts",
     "./preview": "./src/preview.ts",
-    "./device-profile": "./src/device-profile.ts"
+    "./device-profile": "./src/device-profile.ts",
+    "./device-catalog": "./src/device-catalog.ts",
+    "./workflow": "./src/workflow.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

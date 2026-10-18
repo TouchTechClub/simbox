@@ -7,6 +7,12 @@ branding:
   icon: box
   color: purple
 inputs:
+  step:
+    description: >-
+      prepare (check the runner, download the agent), start (boot devices in the
+      background), serve (go live until the run ends) or all (everything in one step).
+    required: false
+    default: "all"
   platform:
     description: Expected device platform (ios or android). Empty infers from the host.
     required: false
@@ -16,30 +22,42 @@ inputs:
     required: false
     default: "false"
   token:
-    description: SIMBOX_TOKEN repo secret, provisioned by simbox init.
-    required: true
+    description: SIMBOX_TOKEN repo secret, provisioned by simbox init. Required for start and all.
+    required: false
+    default: ""
+  run_id:
+    description: Run id assigned by Simbox (the workflow's simbox_run input); empty for manual runs.
+    required: false
+    default: ""
   api_url:
     description: simbox API base URL (override for staging).
     required: false
     default: "https://api.simbox.touchtech.club"
   version:
-    description: Release tag of the simbox-agent tarball to download.
+    description: >-
+      Release tag of the simbox-agent tarball to download. Defaults to the
+      release this action.yml was rendered for; its sha256 is pinned below, so
+      another tag only works with a matching action.yml.
     required: false
-    default: "v1"
+    default: "{{VERSION}}"
 runs:
   using: composite
   steps:
-    - name: Run simbox-agent
+    # Inputs reach every script as env data, never interpolated into shell source.
+    - name: Prepare simbox-agent
+      if: inputs.step != 'start' && inputs.step != 'serve'
       shell: bash
       env:
+        SIMBOX_STEP: ${{ inputs.step }}
         SIMBOX_PLATFORM: ${{ inputs.platform }}
-        SIMBOX_WARM_IOS: ${{ inputs.warm_ios }}
-        SIMBOX_TOKEN: ${{ inputs.token }}
-        SIMBOX_API_URL: ${{ inputs.api_url }}
+        SIMBOX_VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
-        # Fail before provisioning on incompatible custom runners. These inputs
-        # are data in env, never interpolated into shell source.
+        case "${SIMBOX_STEP:-all}" in
+          prepare|all) ;;
+          *) echo "Unknown step '$SIMBOX_STEP': use prepare, start, serve or all." >&2; exit 1 ;;
+        esac
+        # Fail before provisioning on incompatible custom runners.
         HOST="$(uname -s)-$(uname -m)"
         echo "Simbox runner preflight: $HOST; platform=${SIMBOX_PLATFORM:-auto}"
         case "$SIMBOX_PLATFORM:$HOST" in
@@ -68,8 +86,131 @@ runs:
           Linux-x86_64) TARBALL=simbox-agent-linux-amd64.tar.gz; SHA={{SHA256_LINUX}} ;;
           *) echo "Unsupported Simbox runner OS/architecture" >&2; exit 1 ;;
         esac
-        curl -fsSL "https://github.com/TouchTechClub/simbox/releases/download/${{ inputs.version }}/$TARBALL" -o "$TARBALL"
+        [[ "$SIMBOX_VERSION" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid version '$SIMBOX_VERSION'" >&2; exit 1; }
+        DIR="$RUNNER_TEMP/simbox"
+        mkdir -p "$DIR"
+        cd "$DIR"
+        curl -fsSL "https://github.com/TouchTechClub/simbox/releases/download/$SIMBOX_VERSION/$TARBALL" -o "$TARBALL"
         echo "$SHA  $TARBALL" | shasum -a 256 -c -
         tar xzf "$TARBALL"
         chmod +x ./simbox-agent
-        ./simbox-agent
+        # The hard-exit clock counts from here: user steps share the job's time limit.
+        if [[ -z "${SIMBOX_JOB_STARTED_AT:-}" && -n "${GITHUB_ENV:-}" ]]; then
+          echo "SIMBOX_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+        fi
+
+    - name: Start simbox-agent
+      if: inputs.step == 'start'
+      shell: bash
+      env:
+        SIMBOX_PLATFORM: ${{ inputs.platform }}
+        SIMBOX_WARM_IOS: ${{ inputs.warm_ios }}
+        SIMBOX_TOKEN: ${{ inputs.token }}
+        SIMBOX_RUN_ID: ${{ inputs.run_id }}
+        SIMBOX_API_URL: ${{ inputs.api_url }}
+      run: |
+        set -uo pipefail
+        DIR="$RUNNER_TEMP/simbox"
+        STAGE="$DIR/stage"
+        LOG="$STAGE/agent.log"
+        [[ -x "$DIR/simbox-agent" ]] || { echo "::error::simbox-agent is not prepared; run this action with step: prepare first." >&2; exit 1; }
+        [[ -n "${SIMBOX_TOKEN:-}" ]] || { echo "::error::The start step needs the token input (the SIMBOX_TOKEN secret)." >&2; exit 1; }
+        rm -rf "$STAGE"
+        mkdir -p "$STAGE"
+        : > "$LOG"
+        SIMBOX_STAGE_DIR="$STAGE" "$DIR/simbox-agent" >> "$LOG" 2>&1 < /dev/null &
+        PID=$!
+        echo "$PID" > "$STAGE/agent.pid"
+        # Relay complete lines only, in order, so ::add-mask:: commands the agent
+        # prints are processed before anything that could contain the secret.
+        OFFSET=0
+        relay() {
+          tail -c +"$((OFFSET + 1))" "$LOG" > "$STAGE/chunk"
+          local lines bytes
+          lines=$(($(wc -l < "$STAGE/chunk")))
+          if (( lines > 0 )); then
+            head -n "$lines" "$STAGE/chunk"
+            bytes=$(($(head -n "$lines" "$STAGE/chunk" | wc -c)))
+            OFFSET=$((OFFSET + bytes))
+          fi
+        }
+        while :; do
+          relay
+          if [[ -f "$STAGE/ready" ]]; then
+            relay
+            echo "$OFFSET" > "$STAGE/offset"
+            echo "Simbox devices are booted; the serve step makes them reachable."
+            exit 0
+          fi
+          if [[ -f "$STAGE/exit-code" ]] || ! kill -0 "$PID" 2>/dev/null; then
+            wait "$PID" 2>/dev/null
+            CODE=$?
+            relay
+            tail -c +"$((OFFSET + 1))" "$LOG"
+            [[ -f "$STAGE/exit-code" ]] && CODE=$(cat "$STAGE/exit-code")
+            (( CODE == 0 )) && CODE=1
+            echo "::error::simbox-agent exited (code $CODE) before its devices were ready; see the log above."
+            exit "$CODE"
+          fi
+          sleep 1
+        done
+
+    - name: Serve devices
+      if: inputs.step == 'serve'
+      shell: bash
+      run: |
+        set -uo pipefail
+        STAGE="$RUNNER_TEMP/simbox/stage"
+        LOG="$STAGE/agent.log"
+        [[ -f "$STAGE/agent.pid" && -f "$STAGE/offset" ]] || { echo "::error::No started simbox-agent; run this action with step: start first." >&2; exit 1; }
+        PID=$(cat "$STAGE/agent.pid")
+        OFFSET=$(cat "$STAGE/offset")
+        relay() {
+          tail -c +"$((OFFSET + 1))" "$LOG" > "$STAGE/chunk"
+          local lines bytes
+          lines=$(($(wc -l < "$STAGE/chunk")))
+          if (( lines > 0 )); then
+            head -n "$lines" "$STAGE/chunk"
+            bytes=$(($(head -n "$lines" "$STAGE/chunk" | wc -c)))
+            OFFSET=$((OFFSET + bytes))
+          fi
+        }
+        finish() {
+          relay
+          tail -c +"$((OFFSET + 1))" "$LOG"
+          CODE=1
+          [[ -f "$STAGE/exit-code" ]] && CODE=$(cat "$STAGE/exit-code")
+          exit "$CODE"
+        }
+        # Cancellation: let the agent deregister and stop its devices first.
+        stop() {
+          echo "Stopping simbox-agent"
+          kill -TERM "$PID" 2>/dev/null
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            kill -0 "$PID" 2>/dev/null || break
+            relay
+            sleep 1
+          done
+          finish
+        }
+        trap stop INT TERM
+        touch "$STAGE/go"
+        while kill -0 "$PID" 2>/dev/null; do
+          relay
+          sleep 1
+        done
+        finish
+
+    - name: Run simbox-agent
+      if: inputs.step == 'all' || inputs.step == ''
+      shell: bash
+      env:
+        SIMBOX_PLATFORM: ${{ inputs.platform }}
+        SIMBOX_WARM_IOS: ${{ inputs.warm_ios }}
+        SIMBOX_TOKEN: ${{ inputs.token }}
+        SIMBOX_RUN_ID: ${{ inputs.run_id }}
+        SIMBOX_API_URL: ${{ inputs.api_url }}
+      run: |
+        set -euo pipefail
+        [[ -n "${SIMBOX_TOKEN:-}" ]] || { echo "::error::The token input (the SIMBOX_TOKEN secret) is required." >&2; exit 1; }
+        "$RUNNER_TEMP/simbox/simbox-agent"

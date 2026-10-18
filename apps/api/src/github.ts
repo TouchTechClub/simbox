@@ -2,7 +2,6 @@ import {
   REPO_SECRET_NAME,
   WORKFLOW_COMMIT_MESSAGE,
   WORKFLOW_PATH,
-  WORKFLOW_YAML,
   DEFAULT_RUNNERS,
   validateRunner,
   type RunnerTarget,
@@ -100,8 +99,9 @@ export async function gh<T>(token: string, path: string, opts: GhFetchOptions = 
       `GitHub ${opts.method ?? "GET"} ${path}: ${res.status} ${text.slice(0, 300)}`,
     );
   }
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  // 202/204 (cancel, dispatch) may have an empty body.
+  const text = await res.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +147,8 @@ export async function installationToken(env: Env, installationId: number): Promi
 
 interface ContentFile {
   sha: string;
+  /** base64 with embedded newlines; absent for files over 1MB. */
+  content?: string;
 }
 
 interface RefResponse {
@@ -167,48 +169,69 @@ async function putWorkflowFile(
   fullName: string,
   branch: string,
   sha: string | null,
+  yaml: string,
 ): Promise<void> {
   await gh<unknown>(token, `/repos/${fullName}/contents/${WORKFLOW_PATH}`, {
     method: "PUT",
     body: {
       message: WORKFLOW_COMMIT_MESSAGE,
-      content: bytesToBase64(new TextEncoder().encode(WORKFLOW_YAML)),
+      content: bytesToBase64(new TextEncoder().encode(yaml)),
       branch,
       ...(sha ? { sha } : {}),
     },
   });
 }
 
-async function getFileSha(token: string, fullName: string, branch: string): Promise<string | null> {
+async function getWorkflowFile(
+  token: string,
+  fullName: string,
+  branch: string,
+): Promise<ContentFile | null> {
   try {
-    const file = await gh<ContentFile>(
+    return await gh<ContentFile>(
       token,
       `/repos/${fullName}/contents/${WORKFLOW_PATH}?ref=${encodeURIComponent(branch)}`,
     );
-    return file.sha;
   } catch (e) {
     if (e instanceof GithubApiError && e.status === 404) return null;
     throw e;
   }
 }
 
+async function getFileSha(token: string, fullName: string, branch: string): Promise<string | null> {
+  return (await getWorkflowFile(token, fullName, branch))?.sha ?? null;
+}
+
+/** The workflow file's text on a branch, or null when it does not exist. */
+export async function readWorkflowFile(
+  token: string,
+  fullName: string,
+  branch: string,
+): Promise<string | null> {
+  const file = await getWorkflowFile(token, fullName, branch);
+  if (!file) return null;
+  return typeof file.content === "string" ? decodeContent(file.content) : "";
+}
+
 /**
- * Commit the canonical workflow to the default branch. On a protected branch
- * (403), fall back to a `simbox-setup` branch + PR; caller marks the repo
- * `pending_pr` and stores the returned pr_url.
+ * Commit a rendered workflow to the default branch. On a protected branch
+ * (403/409 from rulesets), fall back to a `simbox-setup` branch + PR; caller
+ * marks the repo `pending_pr` and stores the returned pr_url. Unchanged
+ * content is not re-committed.
  */
 export async function commitWorkflow(
-  env: Env,
   token: string,
   fullName: string,
   defaultBranch: string,
+  yaml: string,
 ): Promise<CommitResult> {
-  const sha = await getFileSha(token, fullName, defaultBranch);
+  const current = await getWorkflowFile(token, fullName, defaultBranch);
+  if (current?.content && decodeContent(current.content) === yaml) return { kind: "committed" };
   try {
-    await putWorkflowFile(token, fullName, defaultBranch, sha);
+    await putWorkflowFile(token, fullName, defaultBranch, current?.sha ?? null, yaml);
     return { kind: "committed" };
   } catch (e) {
-    if (!(e instanceof GithubApiError) || e.status !== 403) throw e;
+    if (!(e instanceof GithubApiError) || (e.status !== 403 && e.status !== 409)) throw e;
   }
 
   // Protected branch → PR path.
@@ -225,27 +248,35 @@ export async function commitWorkflow(
     // 422 = branch already exists — reuse it.
     if (!(e instanceof GithubApiError) || e.status !== 422) throw e;
   }
-  const branchSha = await getFileSha(token, fullName, SETUP_BRANCH);
-  await putWorkflowFile(token, fullName, SETUP_BRANCH, branchSha);
-  const pr = await gh<PullResponse>(token, `/repos/${fullName}/pulls`, {
-    method: "POST",
-    body: {
-      title: "Add Simbox workflow",
-      head: SETUP_BRANCH,
-      base: defaultBranch,
-      body: "Adds `.github/workflows/simbox.yml` so Simbox can run iOS/Android emulators on this repo's GitHub Actions minutes. Merge to finish setup.",
-    },
-  });
-  return { kind: "pending_pr", prUrl: pr.html_url };
+  const branchFile = await getWorkflowFile(token, fullName, SETUP_BRANCH);
+  if (!branchFile?.content || decodeContent(branchFile.content) !== yaml)
+    await putWorkflowFile(token, fullName, SETUP_BRANCH, branchFile?.sha ?? null, yaml);
+  try {
+    const pr = await gh<PullResponse>(token, `/repos/${fullName}/pulls`, {
+      method: "POST",
+      body: {
+        title: "Update Simbox workflow",
+        head: SETUP_BRANCH,
+        base: defaultBranch,
+        body: "Updates `.github/workflows/simbox.yml` so Simbox can run iOS/Android emulators on this repo's GitHub Actions minutes. Merge to finish setup.",
+      },
+    });
+    return { kind: "pending_pr", prUrl: pr.html_url };
+  } catch (e) {
+    // 422: a PR from simbox-setup is already open; the push above updated it.
+    if (!(e instanceof GithubApiError) || e.status !== 422) throw e;
+    const owner = fullName.split("/")[0];
+    const open = await gh<PullResponse[]>(
+      token,
+      `/repos/${fullName}/pulls?state=open&head=${encodeURIComponent(`${owner}:${SETUP_BRANCH}`)}&per_page=1`,
+    );
+    if (!open[0]) throw e;
+    return { kind: "pending_pr", prUrl: open[0].html_url };
+  }
 }
 
-/** Whether the workflow file exists on the default branch (post-PR-merge check). */
-export async function workflowFileExists(
-  token: string,
-  fullName: string,
-  defaultBranch: string,
-): Promise<boolean> {
-  return (await getFileSha(token, fullName, defaultBranch)) !== null;
+function decodeContent(content: string): string {
+  return new TextDecoder().decode(base64ToBytes(content.replace(/\s+/g, "")));
 }
 
 /** Best-effort removal of the workflow file from the default branch. */
@@ -317,13 +348,20 @@ export async function deleteSimboxTokenSecret(token: string, fullName: string): 
 // workflow_dispatch + run-id binding + cancel
 // ---------------------------------------------------------------------------
 
+export interface DispatchOptions {
+  platform: "ios" | "android";
+  runner?: RunnerTarget;
+  /** Simbox run id; omitted only for legacy (v1) workflows without the input. */
+  simboxRun?: string;
+}
+
 export async function dispatchWorkflow(
   token: string,
   fullName: string,
   ref: string,
-  platform: "ios" | "android" = "ios",
-  runner: RunnerTarget = DEFAULT_RUNNERS[platform],
+  options: DispatchOptions,
 ): Promise<void> {
+  const { platform, runner = DEFAULT_RUNNERS[platform], simboxRun } = options;
   // The workflow file is addressed by path, per the REST API.
   await gh<unknown>(token, `/repos/${fullName}/actions/workflows/simbox.yml/dispatches`, {
     method: "POST",
@@ -331,45 +369,116 @@ export async function dispatchWorkflow(
     // omitting inputs could silently run on a different (possibly paid) image.
     body: {
       ref,
-      inputs: { platform, runner_labels: JSON.stringify(validateRunner(runner, platform).labels) },
+      inputs: {
+        platform,
+        runner_labels: JSON.stringify(validateRunner(runner, platform).labels),
+        ...(simboxRun ? { simbox_run: simboxRun } : {}),
+      },
     },
   });
 }
 
+/** GitHub's 422 when a dispatch passes an input the committed workflow lacks. */
+export function isUnexpectedInputError(error: unknown): boolean {
+  return (
+    error instanceof GithubApiError &&
+    error.status === 422 &&
+    /unexpected inputs?/i.test(error.message)
+  );
+}
+
 interface WorkflowRunsResponse {
   total_count: number;
-  workflow_runs: Array<{ id: number; status: string }>;
+  workflow_runs: Array<{ id: number; status: string; display_title?: string }>;
+}
+
+async function listDispatchedRuns(
+  token: string,
+  fullName: string,
+  since: number,
+): Promise<WorkflowRunsResponse["workflow_runs"]> {
+  const iso = new Date((since - 5) * 1000).toISOString();
+  const res = await gh<WorkflowRunsResponse>(
+    token,
+    `/repos/${fullName}/actions/workflows/simbox.yml/runs?event=workflow_dispatch&created=${encodeURIComponent(`>=${iso}`)}&per_page=20`,
+  );
+  return res.workflow_runs;
 }
 
 /**
- * workflow_dispatch returns 204 with no run id, so we poll the runs list for a
- * run created after `dispatchedAt`. Bounded (~24s) so the ensure request can't
- * hang; if it misses, the runs row is left with gh_run_id NULL and the
- * workflow_run webhook binds it later.
+ * The GitHub run whose `run-name` carries this Simbox run id (v2 workflows).
+ * Exact correlation: two platforms dispatched in the same second cannot swap.
+ */
+export async function findDispatchedRun(
+  token: string,
+  fullName: string,
+  simboxRunId: string,
+  dispatchedAt: number,
+): Promise<number | null> {
+  const runs = await listDispatchedRuns(token, fullName, dispatchedAt);
+  return runs.find((run) => run.display_title?.toLowerCase().includes(simboxRunId))?.id ?? null;
+}
+
+/**
+ * Legacy (v1 workflow) binding: workflow_dispatch returns 204 with no run id,
+ * so poll for the oldest run created after `dispatchedAt` that no other Simbox
+ * run already claims. Bounded (~24s) so ensure can't hang; on a miss the row
+ * stays unbound and the webhook or reconcile binds it later.
  */
 export async function bindGhRunId(
   token: string,
   fullName: string,
   dispatchedAt: number,
+  claimed: ReadonlySet<number>,
   attempts = 8,
 ): Promise<number | null> {
-  const iso = new Date((dispatchedAt - 5) * 1000).toISOString();
   for (let i = 0; i < attempts; i++) {
     if (i > 0) await sleep(3000);
-    const res = await gh<WorkflowRunsResponse>(
-      token,
-      `/repos/${fullName}/actions/workflows/simbox.yml/runs?event=workflow_dispatch&created=${encodeURIComponent(`>=${iso}`)}&per_page=5`,
-    );
-    const run = res.workflow_runs[0];
+    const runs = await listDispatchedRuns(token, fullName, dispatchedAt);
+    const run = runs.filter((r) => !claimed.has(r.id)).at(-1);
     if (run) return run.id;
   }
   return null;
+}
+
+/** Whether a GitHub user may push to a repository, via their OAuth token. */
+export async function userRepoAccess(
+  userToken: string,
+  fullName: string,
+): Promise<{
+  id: number;
+  fullName: string;
+  defaultBranch: string;
+  private: boolean;
+  canPush: boolean;
+} | null> {
+  try {
+    const repo = await gh<{
+      id: number;
+      full_name: string;
+      default_branch: string;
+      private: boolean;
+      permissions?: { admin?: boolean; maintain?: boolean; push?: boolean };
+    }>(userToken, `/repos/${fullName}`);
+    const p = repo.permissions ?? {};
+    return {
+      id: repo.id,
+      fullName: repo.full_name,
+      defaultBranch: repo.default_branch,
+      private: repo.private,
+      canPush: Boolean(p.admin || p.maintain || p.push),
+    };
+  } catch (e) {
+    if (e instanceof GithubApiError && (e.status === 404 || e.status === 403)) return null;
+    throw e;
+  }
 }
 
 export interface WorkflowRunInfo {
   id: number;
   status: string | null;
   conclusion: string | null;
+  display_title?: string;
 }
 
 export async function getWorkflowRun(

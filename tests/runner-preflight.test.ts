@@ -2,17 +2,12 @@ import { expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { actionStepScript } from "./helpers/action";
 
 test("action preflight rejects wrong hosts and missing tools before any download", async () => {
-  const template = await Bun.file(
-    new URL("../action-src/action.yml.template", import.meta.url),
-  ).text();
-  const preflight = template
-    .split("      run: |\n")[1]!
-    .split('        case "$(uname -s)-$(uname -m)" in')[0]!
-    .split("\n")
-    .map((line) => line.replace(/^        /, ""))
-    .join("\n");
+  const preflight = (await actionStepScript("Prepare simbox-agent")).split(
+    'case "$(uname -s)-$(uname -m)" in',
+  )[0]!;
   const dir = await mkdtemp(join(tmpdir(), "simbox-preflight-"));
   try {
     await mkdir(join(dir, "sdk/cmdline-tools/latest/bin"), { recursive: true });
@@ -42,6 +37,8 @@ test("action preflight rejects wrong hosts and missing tools before any download
       return { code: await child.exited, error: await new Response(child.stderr).text() };
     };
     expect((await run()).code).toBe(0);
+    expect((await run({ SIMBOX_STEP: "prepare" })).code).toBe(0);
+    expect((await run({ SIMBOX_STEP: "launch" })).error).toContain("Unknown step");
     expect((await run({ SIMBOX_PLATFORM: "" })).code).toBe(0); // direct-action compatibility
     expect((await run({ SIMBOX_PLATFORM: "android" })).error).toContain("Unsupported runner");
     expect((await run({ FAKE_ARCH: "x86_64" })).error).toContain("Unsupported runner");

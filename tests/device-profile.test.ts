@@ -4,11 +4,12 @@ import {
   sameDeviceProfile,
   validateDeviceProfile,
 } from "../packages/shared/src/device-profile";
+import { compareVersions } from "../packages/shared/src/device-catalog";
 import {
-  compareVersions,
   foldableTarget,
   rankXcodeBundles,
   xcodeCandidates,
+  xcodeVersions,
 } from "../packages/agent/src/xcode";
 
 test("device profiles accept only foldable and an iOS Xcode version", () => {
@@ -51,6 +52,9 @@ test("Xcode bundles rank releases before betas, newest first", () => {
       "Simulator.app",
     ]),
   ).toEqual(["Xcode_27.1.app", "Xcode_27.app", "Xcode_26.4.app", "Xcode_27.1_beta.app"]);
+  expect(
+    xcodeVersions(["Xcode_27.1_beta.app", "Xcode_27.app", "Xcode_26.4.app", "Xcode.app"]),
+  ).toEqual(["27", "26.4"]);
   expect(xcodeCandidates("27.1")).toEqual(["Xcode_27.1.app", "Xcode_27.1.0.app", "Xcode-27.1.app"]);
 });
 

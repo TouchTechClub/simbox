@@ -25,7 +25,8 @@ and only restores video; **no device action is queued or replayed**.
 ## Same transport as T3 Code
 
 The reference is T3 Code's device panel and `DeviceHubProxy`, not an embedded
-third-party dashboard. Simbox installs **expo-device-hub 0.12.0** into an isolated
+third-party dashboard. Simbox installs **expo-device-hub 0.19.0-canary-20261023-1357114**
+(S5's pin) into an isolated
 runner-temp directory on first preview access, binds it to loopback, and uses:
 
 - Android `serve-emu`: scrcpy H.264 over WebSocket with SEMU v1/v2 frame metadata.

@@ -5,6 +5,7 @@ import { remoteArgs, shouldReplay } from "../apps/cli/src/remote.js";
 import {
   connect,
   connectForArgs,
+  pickRun,
   platformFlag,
   targetPlatform,
   waitForRemote,
@@ -38,6 +39,7 @@ function run(platform: DevicePlatform, patch: Partial<PublicRun> = {}): PublicRu
     tunnelUrl: `https://${platform}.example`,
     daemonToken: `${platform}-token`,
     activeDevices: 0,
+    maxDevices: 1,
     androidReady: platform === "android",
     devicesReady: true,
     createdAt: 1,
@@ -61,6 +63,7 @@ function fakes(
     history?: RunSummary[];
     cache?: Partial<Record<DevicePlatform, ConnectInfo>>;
     healthy?: (info: ConnectInfo) => boolean;
+    pinned?: string;
   } = {},
 ) {
   const cache = { ...options.cache };
@@ -90,6 +93,7 @@ function fakes(
       delete cache[platform];
     },
     pause: async () => {},
+    pinned: () => options.pinned,
   };
   return { deps, calls, cache };
 }
@@ -146,10 +150,45 @@ describe("platform routing", () => {
       active: [ios, android],
       cache: { ios: endpoint(ios), android: endpoint(android) },
     });
-    await expect(connectForArgs(["snapshot"], two.deps)).rejects.toThrow("Two runs are active");
+    await expect(connectForArgs(["snapshot"], two.deps)).rejects.toThrow(
+      "iOS and Android runs are active",
+    );
     expect(
       (await connectForArgs(["snapshot", "--platform=android"], two.deps)).info.tunnelUrl,
     ).toBe("https://android.example");
+  });
+
+  test("several runs of a platform: this agent's held run, never another agent's", async () => {
+    const mine = run("ios", { id: "mine", held: true, tunnelUrl: "https://mine.example" });
+    const other = run("ios", { id: "other", tunnelUrl: "https://other.example" });
+    expect(pickRun("ios", [other, mine])?.id).toBe("mine");
+    expect(pickRun("ios", [other])?.id).toBe("other");
+    expect(pickRun("ios", [run("android")])).toBeNull();
+    // A closing run is not a candidate.
+    expect(pickRun("ios", [other, run("ios", { id: "old", state: "closing" })])?.id).toBe("other");
+    expect(() => pickRun("ios", [other, run("ios", { id: "third" })])).toThrow(
+      "2 iOS runs are active (other, third) and none is this agent's",
+    );
+    // SIMBOX_RUN pins a run, and must name one of this platform.
+    expect(pickRun("ios", [mine, other], "other")?.id).toBe("other");
+    expect(() => pickRun("ios", [mine, other], "missing")).toThrow("SIMBOX_RUN=missing");
+    expect(() => pickRun("android", [mine, run("android")], "mine")).toThrow(
+      "not an active Android",
+    );
+    // The agent's runs decide the platform when both are active.
+    expect(targetPlatform(undefined, [mine, run("android")])).toBe("ios");
+
+    const { deps } = fakes({ active: [other, mine] });
+    expect((await connectForArgs(["snapshot"], deps)).info.tunnelUrl).toBe("https://mine.example");
+    const pinned = fakes({
+      active: [other, mine],
+      pinned: "other",
+      cache: { ios: endpoint(mine) },
+    });
+    // A cache for another run never serves a pinned shell.
+    expect((await connectForArgs(["snapshot"], pinned.deps)).info.tunnelUrl).toBe(
+      "https://other.example",
+    );
   });
 
   test("an unreachable cache falls back to the API and is replaced", async () => {

@@ -3,8 +3,16 @@ import { join } from "node:path";
 import type { DevicePlatform } from "@simbox/shared";
 import { configDir } from "./config.js";
 import type { ConnectInfo } from "./connect.js";
+import { holderId } from "./holder.js";
 
-const cachePath = (platform: DevicePlatform) => join(configDir(), `current-run-${platform}.json`);
+/** Each agent (holder) caches its own run: agents on one machine may use different runs. */
+const cachePath = (platform: DevicePlatform) => {
+  const holder = holderId();
+  return join(
+    configDir(),
+    `current-run-${platform}${holder ? `-${holder.slice(0, 16)}` : ""}.json`,
+  );
+};
 
 /** Pre-v2 single-run cache. It cannot say which platform it served, so it is never read. */
 const legacyPath = () => join(configDir(), "current-run.json");

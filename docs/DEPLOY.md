@@ -131,8 +131,10 @@ runs keep the old agent until stopped/recreated after a release.
 
 Android testing uses `simbox sim --platform android --new`: the repaired workflow
 dispatches `ubuntu-latest`, grants `/dev/kvm` access, and downloads the sha256-pinned
-Linux x64 agent. iOS defaults to macOS ARM64. Each user has at most one active run
-per platform, so an iOS and an Android run can be live at once. Run `simbox repair`
+Linux x64 agent. iOS defaults to GitHub's `xcode-27` ARM64 image. Each user can
+have up to 5 iOS and 10 Android runs live at once (`MAX_ACTIVE_RUNS`); each caller
+keeps its own run. The `concurrent_runs` migration must be applied before the API
+that uses it deploys, and before releasing the CLI/agent. Run `simbox repair`
 after upgrading to install the current workflow (`platform`, `runner_labels` and
 `simbox_run` inputs, staged steps); older workflows run one platform at a time.
 Android readiness requires `sys.boot_completed=1`, not merely AVD creation.

@@ -37,7 +37,7 @@ import {
   formatDuration,
   formatTimestamp,
   queryKeys,
-  useCurrentRun,
+  useActiveRuns,
   useMe,
   useNow,
   useRepoStatus,
@@ -82,7 +82,7 @@ function Toolbar() {
 
   const refresh = () =>
     Promise.all([
-      queryClient.invalidateQueries({ queryKey: queryKeys.currentRun }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.activeRuns }),
       queryClient.invalidateQueries({ queryKey: queryKeys.runnerSettings }),
       queryClient.invalidateQueries({ queryKey: queryKeys.repoStatus }),
       queryClient.invalidateQueries({ queryKey: queryKeys.runs }),
@@ -139,7 +139,7 @@ function RepoPanel() {
       queryClient.invalidateQueries({ queryKey: queryKeys.repoStatus }),
       queryClient.invalidateQueries({ queryKey: queryKeys.runnerSettings }),
       queryClient.invalidateQueries({ queryKey: queryKeys.runs }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.currentRun }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.activeRuns }),
     ]);
 
   const repair = useMutation({
@@ -359,8 +359,51 @@ function EmptyRunState() {
   );
 }
 
-function LiveRunPanel() {
-  const current = useCurrentRun();
+const PLATFORM_NAMES = { ios: "iOS", android: "Android" } as const;
+
+/** Every active run: a platform may have several, one per busy small runner. */
+function LiveRunsPanel({
+  previewRunId,
+  onPreview,
+}: {
+  previewRunId: string | null;
+  onPreview: (runId: string) => void;
+}) {
+  const active = useActiveRuns();
+  if (active.isLoading) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Live runs</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <Skeleton className="h-6 w-40" />
+          <Skeleton className="h-24 w-full" />
+        </CardContent>
+      </Card>
+    );
+  }
+  const runs = active.data?.runs ?? [];
+  if (!runs.length) return <EmptyRunState />;
+  const live = runs.filter((run) => run.state === "live");
+  return (
+    <div className="flex flex-col gap-4">
+      {runs.map((run) => (
+        <RunCard
+          key={run.id}
+          run={run}
+          onPreview={
+            live.length > 1 && run.state === "live" && run.id !== previewRunId
+              ? () => onPreview(run.id)
+              : undefined
+          }
+        />
+      ))}
+    </div>
+  );
+}
+
+function RunCard({ run, onPreview }: { run: PublicRun; onPreview?: () => void }) {
   const queryClient = useQueryClient();
   const now = useNow();
   const [revealToken, setRevealToken] = useState(false);
@@ -370,28 +413,10 @@ function LiveRunPanel() {
   const stop = useMutation({
     mutationFn: (runId: string) => api.stopRun(runId),
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.currentRun });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.activeRuns });
       void queryClient.invalidateQueries({ queryKey: queryKeys.runs });
     },
   });
-
-  const run: PublicRun | null = current.data?.run ?? null;
-
-  if (current.isLoading) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Live run</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <Skeleton className="h-6 w-40" />
-          <Skeleton className="h-24 w-full" />
-        </CardContent>
-      </Card>
-    );
-  }
-
-  if (!run) return <EmptyRunState />;
 
   const isLive = run.state === "live";
 
@@ -410,16 +435,25 @@ function LiveRunPanel() {
     <Card>
       <CardHeader className="flex-row items-start justify-between gap-3 space-y-0">
         <div className="flex flex-col gap-1">
-          <CardTitle>Live run</CardTitle>
+          <CardTitle>{PLATFORM_NAMES[run.platform]} run</CardTitle>
           <CardDescription className="flex items-center gap-2">
             <RunStateBadge state={run.state} />
+            <span className="font-mono text-xs">{run.id.slice(0, 8)}</span>
             {run.ghRunId ? <span className="font-mono text-xs">gh run #{run.ghRunId}</span> : null}
           </CardDescription>
         </div>
-        <Button variant="outline" size="sm" onClick={() => setConfirmStop(true)}>
-          <Square />
-          Stop
-        </Button>
+        <div className="flex gap-2">
+          {onPreview ? (
+            <Button variant="ghost" size="sm" onClick={onPreview}>
+              <Eye />
+              Preview
+            </Button>
+          ) : null}
+          <Button variant="outline" size="sm" onClick={() => setConfirmStop(true)}>
+            <Square />
+            Stop
+          </Button>
+        </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         <p className="break-words font-mono text-xs text-muted-foreground">
@@ -428,11 +462,14 @@ function LiveRunPanel() {
         <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {[
             { label: "uptime", value: formatDuration(now - run.createdAt) },
-            { label: "devices", value: String(run.activeDevices) },
             {
-              label: "android",
-              value: run.androidReady ? "ready" : "preparing…",
-              tone: run.androidReady ? "text-success" : "text-warning",
+              label: "devices",
+              value: `${run.activeDevices}/${run.maxDevices ?? "?"}`,
+            },
+            {
+              label: "devices ready",
+              value: run.devicesReady ? "ready" : "preparing…",
+              tone: run.devicesReady ? "text-success" : "text-warning",
             },
             {
               label: "expires in",
@@ -575,23 +612,24 @@ function HistoryPanel() {
 }
 
 function Dashboard() {
-  const current = useCurrentRun();
+  const active = useActiveRuns();
+  const [previewRunId, setPreviewRunId] = useState<string | null>(null);
+  const live = (active.data?.runs ?? []).filter((run) => run.state === "live");
+  const preview = live.find((run) => run.id === previewRunId) ?? live[0] ?? null;
   return (
     <div className="flex flex-col gap-6">
       <PageHeader />
       <Toolbar />
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2">
-          <LiveRunPanel />
+          <LiveRunsPanel previewRunId={preview?.id ?? null} onPreview={setPreviewRunId} />
         </div>
         <div className="flex flex-col gap-4">
           <RepoPanel />
           <GettingStartedPanel />
         </div>
       </div>
-      {current.data?.run?.state === "live" ? (
-        <DevicePreviewPanel key={current.data.run.id} runId={current.data.run.id} />
-      ) : null}
+      {preview ? <DevicePreviewPanel key={preview.id} runId={preview.id} /> : null}
       <HistoryPanel />
     </div>
   );

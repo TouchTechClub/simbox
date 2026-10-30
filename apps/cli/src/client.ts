@@ -18,6 +18,7 @@ import type {
   WorkflowSpec,
 } from "@simbox/shared";
 import { apiBaseUrl, loadToken } from "./config.js";
+import { holderId } from "./holder.js";
 
 export class CliError extends Error {
   constructor(
@@ -198,7 +199,7 @@ export const ensureRun = (
 ) =>
   api<EnsureRunResponse>("/v1/runs/ensure", {
     method: "POST",
-    body: { new: fresh, platform, runner, device },
+    body: { new: fresh, platform, runner, device, holder: holderId() },
     timeoutMs: ENSURE_TIMEOUT_MS,
   });
 
@@ -224,9 +225,12 @@ export const getWorkflow = () => api<WorkflowResponse>("/v1/workflow");
 export const putWorkflow = (spec: WorkflowSpec) =>
   api<WorkflowResponse>("/v1/workflow", { method: "PUT", body: { spec } });
 
-/** Every active run, at most one per platform. */
-export const activeRuns = async (): Promise<PublicRun[]> =>
-  (await api<ActiveRunsResponse>("/v1/runs/active")).runs;
+/** Every open run (several per platform), `held` marking this caller's. */
+export const activeRuns = async (): Promise<PublicRun[]> => {
+  // A plain terminal is the API's shared "default" holder.
+  const holder = encodeURIComponent(holderId() ?? "default");
+  return (await api<ActiveRunsResponse>(`/v1/runs/active?holder=${holder}`)).runs;
+};
 
 /**
  * This platform's active run, or null. Without a platform the API answers with

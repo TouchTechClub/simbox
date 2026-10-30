@@ -222,7 +222,7 @@ test("iOS and Android runs are independent, correlated by run id, and only the m
     expect(android.status).toBe(200);
     expect(android.body.runId).not.toBe(ios.body.runId);
     expect(t.github.state.runs.map((r) => r.inputs)).toEqual([
-      { platform: "ios", runner_labels: '["macos-latest"]', simbox_run: ios.body.runId },
+      { platform: "ios", runner_labels: '["xcode-27"]', simbox_run: ios.body.runId },
       { platform: "android", runner_labels: '["ubuntu-latest"]', simbox_run: android.body.runId },
     ]);
     // Re-ensuring a platform reuses its run instead of dispatching again.
@@ -489,6 +489,80 @@ test("connect verifies push access and the installation; the workflow is editabl
   }
 });
 
+test("each caller keeps its run; full small runners send others to new runs, up to the limit", async () => {
+  const t = await setup();
+  try {
+    await t.connectA();
+    const ensure = (holder: string, body: object = {}) =>
+      t.user("/v1/runs/ensure", { platform: "ios", holder, ...body });
+    const goLive = async (runId: string, maxDevices?: number) => {
+      const gh = t.github.state.runs.find((run) => run.inputs.simbox_run === runId)!;
+      await t.runner("/v1/runs/config", { ghRunId: gh.id, runId });
+      const registered = await t.runner("/v1/runs/register", {
+        ghRunId: gh.id,
+        runId,
+        tunnelUrl: `https://${runId}.example.invalid`,
+        daemonToken: `daemon-${runId}`,
+        versions: { agent: "x", agentDevice: "x", cloudflared: "x" },
+        ...(maxDevices ? { maxDevices } : {}),
+      });
+      expect(registered.status).toBe(200);
+      return gh;
+    };
+
+    const a = await ensure("agent-a");
+    expect(t.runRow(a.body.runId)).toMatchObject({ holder: "agent-a", max_devices: 1 });
+    // A small runner's one slot is agent A's: agent B gets its own run.
+    const b = await ensure("agent-b");
+    expect(b.body.runId).not.toBe(a.body.runId);
+    expect((await ensure("agent-a")).body.runId).toBe(a.body.runId);
+    expect((await ensure("agent-b")).body.runId).toBe(b.body.runId);
+    expect(t.github.state.runs).toHaveLength(2);
+
+    // Each caller sees which runs are its own.
+    const listed = await t.user("/v1/runs/active?holder=agent-b");
+    expect(
+      Object.fromEntries(listed.body.runs.map((run: any) => [run.id, [run.held, run.maxDevices]])),
+    ).toEqual({ [b.body.runId]: [true, 1], [a.body.runId]: [false, 1] });
+    expect((await t.user("/v1/runs/current?platform=ios&holder=agent-a")).body.run.id).toBe(
+      a.body.runId,
+    );
+
+    // A bigger runner reports room for two devices and takes a second caller.
+    await goLive(a.body.runId, 2);
+    expect(t.runRow(a.body.runId).max_devices).toBe(2);
+    const c = await ensure("agent-c");
+    expect(c.body).toMatchObject({ state: "live", runId: a.body.runId });
+    // Devices in use count even when no caller holds the run.
+    const d = await ensure("agent-d");
+    expect(d.body.runId).not.toBe(a.body.runId);
+    expect(d.body.runId).not.toBe(b.body.runId);
+
+    // Another device than a run has starts another run instead of failing.
+    const foldable = await ensure("agent-a", { device: { foldable: true } });
+    expect(foldable.status).toBe(200);
+    expect(foldable.body.runId).not.toBe(a.body.runId);
+    expect(JSON.parse(t.runRow(foldable.body.runId).device)).toEqual({ foldable: true });
+
+    // Five iOS runs is the limit: the next caller shares the least-loaded one,
+    // and an explicit fresh run is refused.
+    const e = await ensure("agent-e");
+    expect(t.github.state.runs).toHaveLength(5);
+    expect(e.status).toBe(200);
+    const f = await ensure("agent-f");
+    expect(f.status).toBe(200);
+    expect(t.github.state.runs).toHaveLength(5);
+    const refused = await ensure("agent-g", { new: true });
+    expect(refused).toMatchObject({ status: 409, body: { error: "run_limit" } });
+    expect(refused.body.message).toContain("5 iOS runs are active");
+
+    // An invalid holder is rejected before anything is dispatched.
+    expect((await ensure("bad holder!")).status).toBe(400);
+  } finally {
+    await t.close();
+  }
+});
+
 test("an ensure that loses the insert race reports the winning run", async () => {
   const t = await setup();
   try {
@@ -506,6 +580,7 @@ test("an ensure that loses the insert race reports the winning run", async () =>
           gh_run_id: null,
           state: "queued",
           platform: "android",
+          holder: "default",
           created_at: Math.floor(Date.now() / 1000),
         });
       }

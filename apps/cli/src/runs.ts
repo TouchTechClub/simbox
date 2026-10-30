@@ -4,12 +4,14 @@ import { activeRuns, CliError, runHistory } from "./client.js";
 import { daemonBaseUrl, type ConnectInfo } from "./connect.js";
 import { clearCachedRun, readCachedRun, writeCachedRun } from "./run-cache.js";
 import { sleep } from "./util.js";
+import { pinnedRunId } from "./holder.js";
 
 /**
- * Which run a command talks to, and when it is ready. At most one run is
- * active per platform (iOS on macOS, Android on Linux), so a platform names a
- * run. Everything here is injectable; production uses the API and the
- * per-platform cache in run-cache.ts.
+ * Which run a command talks to, and when it is ready. A platform may have
+ * several runs (iOS on macOS, Android on Linux); each agent uses the run
+ * `simbox sim` reserved for it (`held`), else the platform's only run, else
+ * the one `SIMBOX_RUN` names. Everything here is injectable; production uses
+ * the API and the per-agent cache in run-cache.ts.
  */
 
 export const PLATFORM_NAMES: Record<DevicePlatform, string> = { ios: "iOS", android: "Android" };
@@ -22,6 +24,8 @@ export interface RunsDeps {
   writeCache: (platform: DevicePlatform, info: ConnectInfo) => void;
   clearCache: (platform: DevicePlatform) => void;
   pause: (ms: number) => Promise<void>;
+  /** `SIMBOX_RUN`: pins commands to one run. */
+  pinned: () => string | undefined;
 }
 
 export const defaultRunsDeps: RunsDeps = {
@@ -32,6 +36,7 @@ export const defaultRunsDeps: RunsDeps = {
   writeCache: writeCachedRun,
   clearCache: clearCachedRun,
   pause: sleep,
+  pinned: () => pinnedRunId(),
 };
 
 const withDefaults = (deps: Partial<RunsDeps> = {}): RunsDeps => ({ ...defaultRunsDeps, ...deps });
@@ -67,9 +72,12 @@ function describe(run: PublicRun): string {
   return `${PLATFORM_NAMES[run.platform]} (run ${run.id}, ${run.state})`;
 }
 
+const onlyPlatform = (runs: PublicRun[]) =>
+  new Set(runs.map((run) => run.platform)).size === 1 ? runs[0]!.platform : undefined;
+
 /**
- * Explicit platform, else the only active run's platform. Two active runs and
- * no platform is ambiguous and names both.
+ * Explicit platform, else the platform of this agent's runs, else of every
+ * active run. iOS and Android runs and no platform is ambiguous.
  */
 export function targetPlatform(
   explicit: DevicePlatform | undefined,
@@ -77,9 +85,39 @@ export function targetPlatform(
   hint = "Pass --platform ios or --platform android.",
 ): DevicePlatform {
   if (explicit) return explicit;
-  if (active.length === 1) return active[0]!.platform;
+  const found = onlyPlatform(active.filter((run) => run.held)) ?? onlyPlatform(active);
+  if (found) return found;
   if (active.length === 0) throw new CliError("No active run. Start one with `simbox sim`.");
-  throw new CliError(`Two runs are active: ${active.map(describe).join(" and ")}. ${hint}`);
+  throw new CliError(
+    `iOS and Android runs are active: ${active.map(describe).join(", ")}. ${hint}`,
+  );
+}
+
+/**
+ * The platform's run for this agent: the pinned one, else its newest held
+ * one, else the only one. Null when the platform has none; several runs and
+ * none held is ambiguous, so commands never land on another agent's device.
+ */
+export function pickRun(
+  platform: DevicePlatform,
+  active: PublicRun[],
+  pinned?: string,
+): PublicRun | null {
+  const runs = active.filter((run) => run.platform === platform && !STOPPED.has(run.state));
+  if (pinned) {
+    const run = active.find((candidate) => candidate.id === pinned);
+    if (!run || run.platform !== platform)
+      throw new CliError(
+        `SIMBOX_RUN=${pinned} is not an active ${PLATFORM_NAMES[platform]} run. Check \`simbox ps\`.`,
+      );
+    return run;
+  }
+  const held = runs.find((run) => run.held);
+  if (held) return held;
+  if (runs.length <= 1) return runs[0] ?? null;
+  throw new CliError(
+    `${runs.length} ${PLATFORM_NAMES[platform]} runs are active (${runs.map((run) => run.id).join(", ")}) and none is this agent's. Run \`simbox sim --platform ${platform}\` to get one, or set SIMBOX_RUN=<id>.`,
+  );
 }
 
 /** Runs report devicesReady; older APIs only had androidReady (iOS was ready once live). */
@@ -147,12 +185,12 @@ export async function waitForRun(
   throw new CliError(options.timeoutMessage);
 }
 
-/** The platform's live run endpoint from the API, or null. */
-export async function refreshPlatform(
-  platform: DevicePlatform,
+/** This run's live endpoint from the API, or null once it is gone. */
+export async function refreshRun(
+  runId: string,
   deps: Partial<RunsDeps> = {},
 ): Promise<ConnectInfo | null> {
-  const run = (await withDefaults(deps).activeRuns()).find((r) => r.platform === platform);
+  const run = (await withDefaults(deps).activeRuns()).find((r) => r.id === runId);
   return run ? connectInfo(run) : null;
 }
 
@@ -206,10 +244,11 @@ export async function connect(
   options: { active?: PublicRun[]; timeoutMs?: number; deps?: Partial<RunsDeps> } = {},
 ): Promise<ConnectInfo> {
   const deps = withDefaults(options.deps);
+  const pinned = deps.pinned();
   const cached = deps.readCache(platform);
-  if (cached && (await deps.probe(cached))) return cached;
+  if (cached && (!pinned || cached.runId === pinned) && (await deps.probe(cached))) return cached;
   const active = options.active ?? (await deps.activeRuns());
-  const run = active.find((candidate) => candidate.platform === platform);
+  const run = pickRun(platform, active, pinned);
   if (!run) {
     deps.clearCache(platform);
     throw new CliError(
@@ -223,7 +262,7 @@ export async function connect(
   });
   const info = await waitForRemote(ready.info, {
     probe: deps.probe,
-    refresh: () => refreshPlatform(platform, deps),
+    refresh: () => refreshRun(run.id, deps),
     pause: () => deps.pause(1000),
   });
   deps.writeCache(platform, info);
@@ -241,6 +280,13 @@ export async function connectForArgs(
   const all = withDefaults(deps);
   const explicit = platformFlag(args);
   if (explicit) return { platform: explicit, info: await connect(explicit, { deps: all }) };
+  const pinned = all.pinned();
+  if (pinned) {
+    const active = await all.activeRuns();
+    const run = active.find((candidate) => candidate.id === pinned);
+    if (!run) throw new CliError(`SIMBOX_RUN=${pinned} is not an active run. Check \`simbox ps\`.`);
+    return { platform: run.platform, info: await connect(run.platform, { active, deps: all }) };
+  }
   const cached = PLATFORMS.flatMap((platform) => {
     const info = all.readCache(platform);
     return info ? [{ platform, info }] : [];

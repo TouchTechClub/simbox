@@ -18,8 +18,10 @@ import type {
 import {
   DEFAULT_RUNNERS,
   HARD_EXIT_MINUTES,
+  HOLD_MINUTES,
+  MAX_ACTIVE_RUNS,
   MAX_DEVICES_PER_RUN,
-  formatDeviceProfile,
+  estimateDeviceCap,
   pickDevice,
   resolveDevice,
   resolveRunner,
@@ -34,7 +36,7 @@ import type { AppContext } from "../middleware";
 import { requireRunnerToken, requireUser } from "../middleware";
 import type { RepoRow, RunRow } from "../db";
 import { getRepoForUser } from "../db";
-import { apiError, newId, nowSeconds, toPublicRun, toRunSummary } from "../util";
+import { apiError, devicesReady, newId, nowSeconds, toPublicRun, toRunSummary } from "../util";
 import { getRunnerSettings, readInventory, writeInventory } from "../runners";
 import { provisionRunTunnel, tunnelsConfigured, tunnelZoneDelegated } from "../tunnels";
 import {
@@ -85,6 +87,71 @@ function parsePlatform(value: unknown): DevicePlatform | null | undefined {
   return value === "ios" || value === "android" ? value : null;
 }
 
+const HOLDER = /^[A-Za-z0-9._:-]{1,128}$/;
+
+/** Callers without an identity (older CLIs, a terminal) share one holder. */
+function parseHolder(value: unknown): string | null {
+  if (value === undefined || value === null || value === "") return "default";
+  return typeof value === "string" && HOLDER.test(value) ? value : null;
+}
+
+interface RunClaims {
+  /** Callers that claimed the run within HOLD_MINUTES: they count toward its load. */
+  fresh: (runId: string) => string[];
+  /**
+   * The run is this caller's. A lapsed claim (an agent that only ran `exec`
+   * for a while) still counts, unless another caller has claimed the run since.
+   */
+  holds: (runId: string, holder: string) => boolean;
+}
+
+async function runClaims(
+  db: ReturnType<typeof createDb>,
+  runIds: string[],
+  now: number,
+): Promise<RunClaims> {
+  const rows = runIds.length
+    ? await db
+        .select()
+        .from(schema.runHolders)
+        .where(inArray(schema.runHolders.run_id, runIds))
+        .all()
+    : [];
+  const cutoff = now - HOLD_MINUTES * 60;
+  const fresh = (runId: string) =>
+    rows.filter((row) => row.run_id === runId && row.seen_at >= cutoff).map((row) => row.holder);
+  return {
+    fresh,
+    holds: (runId, holder) => {
+      const recent = fresh(runId);
+      return recent.length
+        ? recent.includes(holder)
+        : rows.some((row) => row.run_id === runId && row.holder === holder);
+    },
+  };
+}
+
+async function holdRun(
+  db: ReturnType<typeof createDb>,
+  runId: string,
+  holder: string,
+  now: number,
+) {
+  await db
+    .insert(schema.runHolders)
+    .values({ run_id: runId, holder, seen_at: now })
+    .onConflictDoUpdate({
+      target: [schema.runHolders.run_id, schema.runHolders.holder],
+      set: { seen_at: now },
+    });
+}
+
+/** Ready runs first, then the furthest along. */
+function readiness(run: RunRow): number {
+  if (run.state === "live") return devicesReady(run) ? 0 : 1;
+  return run.state === "booting" ? 2 : run.state === "queued" ? 3 : 4;
+}
+
 function liveResponse(run: RunRow): EnsureRunResponse {
   return {
     state: "live",
@@ -118,7 +185,9 @@ function inventoryMismatch(device: DeviceProfile, inventory: RunnerInventory): s
 }
 
 // ---------------------------------------------------------------------------
-// POST /v1/runs/ensure — reuse this platform's run, or dispatch one.
+// POST /v1/runs/ensure — the caller's run, else a run with a free device
+// slot, else a new one. A platform may have several runs (MAX_ACTIVE_RUNS);
+// each runner runs at most its device cap (1 on small runners).
 // ---------------------------------------------------------------------------
 
 runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
@@ -134,6 +203,9 @@ runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
     return apiError(c, 400, "invalid_runner", "Specify platform when overriding a runner.");
   if (body.device !== undefined && !requested)
     return apiError(c, 400, "invalid_device", "Specify platform when choosing a device.");
+  const holder = parseHolder(body.holder);
+  if (holder === null)
+    return apiError(c, 400, "invalid_holder", "holder must be 1-128 letters, digits or ._:-");
 
   const db = createDb(c.env);
   const repo = await getRepoForUser(db, user.id);
@@ -162,7 +234,18 @@ runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
   }
   const ctx = lifecycle(c, repo, token);
   const open = (await activeRuns(ctx, user.id, repo)).filter(isActive);
-  const platform: DevicePlatform = requested ?? (open.length === 1 ? open[0]!.platform : "ios");
+  const now = nowSeconds();
+  const claims = await runClaims(
+    ctx.db,
+    open.map((run) => run.id),
+    now,
+  );
+  const heldBy = (run: RunRow) => claims.holds(run.id, holder);
+  const onlyPlatform = (runs: RunRow[]) =>
+    new Set(runs.map((run) => run.platform)).size === 1 ? runs[0]!.platform : undefined;
+  // Omitted: the platform of the caller's runs, else of every run, else iOS.
+  const platform: DevicePlatform =
+    requested ?? onlyPlatform(open.filter(heldBy)) ?? onlyPlatform(open) ?? "ios";
 
   let override: RunnerTarget | undefined;
   let deviceOverride: DeviceProfile | null = null;
@@ -186,36 +269,43 @@ runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
     deviceOverride,
   );
 
-  const current = open.find((run) => run.platform === platform);
-  if (current && !wantNew) {
-    if (override && !sameRunner(current.runner, override)) {
-      return apiError(
-        c,
-        409,
-        "runner_mismatch",
-        `The active ${platform} run uses a different runner. Add --new to replace it.`,
-      );
-    }
-    if (body.device !== undefined && !sameDeviceProfile(current.device ?? null, device)) {
-      return apiError(
-        c,
-        409,
-        "device_mismatch",
-        `The active ${platform} run has a different device (${formatDeviceProfile(current.device ?? null, platform)}). Add --new to replace it.`,
-      );
-    }
-    if (current.state !== "live") return c.json(pendingResponse(current));
-    if (current.active_devices >= MAX_DEVICES_PER_RUN) {
-      return c.json(
-        {
-          error: "at_capacity",
-          message: `Run already has ${current.active_devices} devices (cap ${MAX_DEVICES_PER_RUN}).`,
-          hint: "use --new",
-        },
-        409,
-      );
-    }
-    return c.json(liveResponse(current));
+  const platformRuns = open.filter((run) => run.platform === platform);
+  // An explicit runner or device must match; otherwise any run of the platform serves.
+  const suits = (run: RunRow) =>
+    (!override || sameRunner(run.runner, override)) &&
+    (body.device === undefined || sameDeviceProfile(run.device ?? null, device));
+  const cap = (run: RunRow) => run.max_devices ?? estimateDeviceCap(platform, run.runner);
+  // Devices in use, or other callers holding it, whichever is higher.
+  const load = (run: RunRow) =>
+    Math.max(run.active_devices, claims.fresh(run.id).filter((other) => other !== holder).length);
+  const reuse = async (run: RunRow) => {
+    await holdRun(ctx.db, run.id, holder, now);
+    return c.json(run.state === "live" ? liveResponse(run) : pendingResponse(run));
+  };
+
+  if (!wantNew) {
+    const mine = platformRuns.find((run) => heldBy(run) && suits(run));
+    if (mine) return reuse(mine);
+    const free = platformRuns
+      .filter((run) => suits(run) && load(run) < cap(run))
+      .sort((a, b) => readiness(a) - readiness(b) || load(a) - load(b));
+    if (free[0]) return reuse(free[0]);
+  }
+
+  if (platformRuns.length >= MAX_ACTIVE_RUNS[platform]) {
+    // At the limit, sharing the least-loaded suitable run beats failing.
+    const shared = wantNew
+      ? undefined
+      : platformRuns
+          .filter(suits)
+          .sort((a, b) => load(a) - cap(a) - (load(b) - cap(b)) || readiness(a) - readiness(b))[0];
+    if (shared) return reuse(shared);
+    return apiError(
+      c,
+      409,
+      "run_limit",
+      `${platformRuns.length} ${platform === "ios" ? "iOS" : "Android"} runs are active (Simbox allows ${MAX_ACTIVE_RUNS[platform]}; GitHub runs at most 5 macOS jobs at once on most plans). Stop one with \`simbox stop --run <id>\` or wait for an idle one to exit.`,
+    );
   }
 
   if (device) {
@@ -230,19 +320,24 @@ runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
       );
   }
 
-  if (current) {
-    // --new: retire this platform's run; the other platform keeps running.
-    const closing = await setRunState(
-      ctx.db,
-      current,
-      { state: "closing", endReason: "replaced" },
-      { from: ACTIVE_STATES },
-    );
-    if (closing?.gh_run_id) ctx.defer(cancelOnGithub(ctx, repo, closing.gh_run_id).catch(() => {}));
-  }
+  // --new while this caller's run is still starting (say, stuck in GitHub's
+  // queue) replaces it; its live runs keep serving and idle out if unused.
+  const replaced = new Set<string>();
+  if (wantNew)
+    for (const run of platformRuns.filter((run) => run.holder === holder && run.state !== "live")) {
+      const closing = await setRunState(
+        ctx.db,
+        run,
+        { state: "closing", endReason: "replaced" },
+        { from: ACTIVE_STATES },
+      );
+      if (!closing) continue;
+      replaced.add(run.id);
+      if (closing.gh_run_id)
+        ctx.defer(cancelOnGithub(ctx, repo, closing.gh_run_id).catch(() => {}));
+    }
 
   const runId = newId();
-  const now = nowSeconds();
   try {
     await ctx.db.insert(schema.runs).values({
       id: runId,
@@ -253,18 +348,34 @@ runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
       platform,
       runner,
       device,
+      max_devices: estimateDeviceCap(platform, runner),
+      holder,
       created_at: now,
     });
   } catch (error) {
     if (!isUniqueViolation(error)) throw error;
-    // Another ensure for this platform won the race: report its run.
+    // This caller's other ensure is starting a run on this platform: share it.
     const winner = (await openRuns(ctx.db, user.id)).find(
-      (run) => run.platform === platform && isActive(run),
+      (run) =>
+        run.platform === platform &&
+        run.holder === holder &&
+        (["dispatching", "queued", "booting"] as string[]).includes(run.state),
     );
-    if (winner)
-      return c.json(winner.state === "live" ? liveResponse(winner) : pendingResponse(winner));
+    if (winner) return reuse(winner);
     return apiError(c, 409, "run_conflict", "Another run is starting; retry in a moment.");
   }
+  if (wantNew && platformRuns.some(heldBy))
+    // The fresh run replaces the caller's others, which go to other callers or idle out.
+    await ctx.db.delete(schema.runHolders).where(
+      and(
+        eq(schema.runHolders.holder, holder),
+        inArray(
+          schema.runHolders.run_id,
+          platformRuns.map((run) => run.id),
+        ),
+      ),
+    );
+  await holdRun(ctx.db, runId, holder, now);
   const run = (await ctx.db.select().from(schema.runs).where(eq(schema.runs.id, runId)).get())!;
 
   const failDispatch = async (reason: string) => {
@@ -313,14 +424,14 @@ runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
         .update(schema.repos)
         .set({ workflow_version: 1 })
         .where(eq(schema.repos.user_id, user.id));
-    const other = open.find((r) => r.platform !== platform);
+    const other = open.find((run) => !replaced.has(run.id));
     if (other) {
       await failDispatch("workflow_needs_repair");
       return apiError(
         c,
         409,
         "workflow_needs_repair",
-        `Your Simbox workflow predates running iOS and Android at once, and a ${other.platform} run is active. Run \`simbox repair\` (merge its PR if needed), or stop the ${other.platform} run.`,
+        `Your Simbox workflow predates running several runs at once, and a ${other.platform} run is active. Run \`simbox repair\` (merge its PR if needed), or stop the ${other.platform} run.`,
       );
     }
     try {
@@ -372,7 +483,7 @@ runRoutes.post("/v1/runs/ensure", requireUser, async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// Reads: active runs (≤1 per platform), current (legacy), history.
+// Reads: open runs (several per platform), current (legacy), history.
 // ---------------------------------------------------------------------------
 
 async function userRuns(c: Ctx): Promise<RunRow[]> {
@@ -382,21 +493,41 @@ async function userRuns(c: Ctx): Promise<RunRow[]> {
   return activeRuns(lifecycle(c, repo), user.id, repo);
 }
 
+/** With `?holder=`, marks the runs reserved for that caller. */
+async function publicRuns(c: Ctx, runs: RunRow[]) {
+  const holder = c.req.query("holder") ? parseHolder(c.req.query("holder")) : null;
+  if (!holder) return runs.map(toPublicRun);
+  const claims = await runClaims(
+    createDb(c.env),
+    runs.map((run) => run.id),
+    nowSeconds(),
+  );
+  return runs.map((run) => ({
+    ...toPublicRun(run),
+    held: claims.holds(run.id, holder),
+  }));
+}
+
 runRoutes.get("/v1/runs/active", requireUser, async (c) => {
-  const runs = await userRuns(c);
-  return c.json({ runs: runs.map(toPublicRun) } satisfies ActiveRunsResponse);
+  const runs = await publicRuns(c, await userRuns(c));
+  return c.json({ runs } satisfies ActiveRunsResponse);
 });
 
 runRoutes.get("/v1/runs/current", requireUser, async (c) => {
   const platform = parsePlatform(c.req.query("platform"));
   if (platform === null)
     return apiError(c, 400, "invalid_platform", "platform must be ios or android.");
-  // Without a platform (older clients): the newest active run.
-  const runs = (await userRuns(c))
-    .filter((run) => !platform || run.platform === platform)
-    .sort((a, b) => b.created_at - a.created_at);
-  const run = runs.find(isActive) ?? runs[0] ?? null;
-  return c.json({ run: run ? toPublicRun(run) : null });
+  // Without a platform (older clients): the newest active run. With several,
+  // prefer the caller's (`?holder=`).
+  const runs = await publicRuns(
+    c,
+    (await userRuns(c))
+      .filter((run) => !platform || run.platform === platform)
+      .sort((a, b) => b.created_at - a.created_at),
+  );
+  const active = runs.filter((run) => (ACTIVE_STATES as readonly string[]).includes(run.state));
+  const run = active.find((candidate) => candidate.held) ?? active[0] ?? runs[0] ?? null;
+  return c.json({ run });
 });
 
 runRoutes.get("/v1/runs", requireUser, async (c) => {
@@ -589,6 +720,7 @@ runRoutes.post("/v1/runs/config", requireRunnerToken, async (c) => {
     platform: found.run.platform,
     device: found.run.device ?? null,
     runId: found.run.id,
+    ...(found.run.runner?.maxDevices ? { maxDevices: found.run.runner.maxDevices } : {}),
   };
   return c.json(config);
 });
@@ -665,6 +797,9 @@ runRoutes.post("/v1/runs/register", requireRunnerToken, async (c) => {
       patch: {
         tunnel_url: body.tunnelUrl,
         daemon_token: body.daemonToken,
+        ...(Number.isInteger(body.maxDevices)
+          ? { max_devices: Math.max(1, Math.min(MAX_DEVICES_PER_RUN, body.maxDevices!)) }
+          : {}),
         live_at: run.live_at ?? now,
         expires_at: run.expires_at ?? now + HARD_EXIT_MINUTES * 60,
       },

@@ -88,8 +88,8 @@ export interface InstallableRepo {
   installationId: number;
 }
 
-export interface CurrentRunResponse {
-  run: PublicRun | null;
+export interface ActiveRunsResult {
+  runs: PublicRun[];
 }
 
 export interface RunsResponse {
@@ -107,7 +107,7 @@ function asArray(raw: unknown): Rec[] {
   if (Array.isArray(raw)) return raw as Rec[];
   if (raw && typeof raw === "object") {
     const r = raw as Rec;
-    for (const key of ["repos", "repositories", "items", "installations"]) {
+    for (const key of ["repos", "repositories", "items", "installations", "runs"]) {
       if (Array.isArray(r[key])) return r[key] as Rec[];
     }
   }
@@ -173,6 +173,7 @@ function normalizeRun(raw: unknown): PublicRun | null {
     tunnelUrl: (r.tunnelUrl ?? r.tunnel_url ?? null) as string | null,
     daemonToken: (r.daemonToken ?? r.daemon_token ?? null) as string | null,
     activeDevices: num(r.activeDevices ?? r.active_devices),
+    maxDevices: (r.maxDevices ?? r.max_devices ?? null) as number | null,
     androidReady: bool(r.androidReady ?? r.android_ready),
     devicesReady: bool(
       r.devicesReady ?? (r.state === "live" && (r.platform !== "android" || r.androidReady)),
@@ -194,6 +195,7 @@ function normalizeRunSummary(raw: unknown): RunSummary {
     device: (r.device ?? null) as DeviceProfile | null,
     bootedDevice: (r.bootedDevice ?? null) as BootedDevice | null,
     activeDevices: num(r.activeDevices ?? r.active_devices),
+    maxDevices: (r.maxDevices ?? r.max_devices ?? null) as number | null,
     createdAt: num(r.createdAt ?? r.created_at),
     endedAt: (r.endedAt ?? r.ended_at ?? null) as number | null,
     endReason: (r.endReason ?? r.end_reason ?? null) as string | null,
@@ -244,13 +246,14 @@ export const api = {
   updateRunners: (scope: "account" | "repo", patch: Partial<RunnerPreferences>) =>
     post<RunnerSettings>(`/v1/runners/${scope}`, patch),
 
-  currentRun: async (): Promise<CurrentRunResponse> => {
-    const raw = await get<unknown>("/v1/runs/current");
-    if (raw && typeof raw === "object" && "run" in (raw as Rec)) {
-      return { run: normalizeRun((raw as Rec).run) };
-    }
-    // Bare-run shape
-    return { run: normalizeRun(raw) };
+  /** Every starting, live or closing run; a platform may have several. */
+  activeRuns: async (): Promise<ActiveRunsResult> => {
+    const raw = await get<unknown>("/v1/runs/active");
+    return {
+      runs: asArray(raw)
+        .map(normalizeRun)
+        .filter((run): run is PublicRun => run !== null),
+    };
   },
 
   runs: async (): Promise<RunsResponse> => {

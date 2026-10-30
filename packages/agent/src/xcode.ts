@@ -1,6 +1,6 @@
-import { readdir } from "node:fs/promises";
+import { readdir, realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { compareVersions } from "@simbox/shared";
 import { run } from "./proc.js";
 import { info, warn } from "./log.js";
@@ -64,6 +64,32 @@ export function xcodeVersions(names: string[]): string[] {
     .map((name) => /^Xcode[_-](\d+(?:\.\d+)*)\.app$/.exec(name)?.[1])
     .filter((version) => version !== undefined);
   return [...new Set(versions)];
+}
+
+/**
+ * Release bundles, newest first, judged by the bundle each name really is:
+ * GitHub links `Xcode_27.2.app` to `Xcode_27.2_Release_Candidate.app`.
+ */
+export function releaseXcodeBundles(names: string[], realName: (name: string) => string): string[] {
+  return rankXcodeBundles(names).filter((name) =>
+    /^Xcode[_-]\d+(?:\.\d+)*\.app$/.test(realName(name)),
+  );
+}
+
+async function realNames(names: string[]): Promise<Map<string, string>> {
+  return new Map(
+    await Promise.all(
+      names.map(
+        async (name) =>
+          [
+            name,
+            basename(
+              await realpath(join(APPLICATIONS, name)).catch(() => join(APPLICATIONS, name)),
+            ),
+          ] as const,
+      ),
+    ),
+  );
 }
 
 export async function installedXcodeVersions(): Promise<string[]> {
@@ -153,7 +179,8 @@ async function downloadIOSRuntime(): Promise<void> {
  * that ignores it. A foldable also needs an iOS runtime that can run it.
  */
 export async function selectXcode(options: { version?: string; foldable: boolean }): Promise<void> {
-  const bundles = rankXcodeBundles(await readdir(APPLICATIONS).catch(() => []));
+  const names = await readdir(APPLICATIONS).catch(() => []);
+  const bundles = rankXcodeBundles(names);
   let app: string | undefined;
   if (options.version) {
     app = xcodeCandidates(options.version).find((name) => existsSync(join(APPLICATIONS, name)));
@@ -172,6 +199,8 @@ export async function selectXcode(options: { version?: string; foldable: boolean
       throw new Error(
         `No installed Xcode has the iPhone Duo (found ${bundles.join(", ") || "none"}). Use a runner with Xcode 27.1 or later, e.g. --runner xcode-27 --xcode 27.1.`,
       );
+  } else if (!options.foldable) {
+    app = await newestReleaseXcode(names);
   }
   if (app) {
     const developer = developerDir(app);
@@ -196,6 +225,32 @@ export async function selectXcode(options: { version?: string; foldable: boolean
     if ((await foldableSupport()) !== "ready")
       throw new Error("the downloaded iOS runtime cannot run an iPhone Duo");
   }
+}
+
+/**
+ * By default the newest installed release Xcode, when the image selected an
+ * older one and the newer one can run an iOS simulator. Undefined: keep the
+ * image's choice.
+ */
+async function newestReleaseXcode(names: string[]): Promise<string | undefined> {
+  const real = await realNames(names);
+  const newest = releaseXcodeBundles(names, (name) => real.get(name) ?? name)[0];
+  if (!newest) return undefined;
+  const selected = await run(["xcode-select", "-p"], { timeoutMs: 15_000 });
+  const current = await realpath(selected.stdout.trim()).catch(() => selected.stdout.trim());
+  if (current === (await realpath(developerDir(newest)).catch(() => developerDir(newest))))
+    return undefined;
+  try {
+    const { runtimes } = await simctlJson<{ runtimes: Runtime[] }>(
+      ["runtimes"],
+      developerDir(newest),
+    );
+    if (runtimes.some(isIOSRuntime)) return newest;
+    warn(`${newest} has no iOS simulator runtime; keeping the image's Xcode`);
+  } catch (err) {
+    warn(`could not inspect ${newest} (${String(err).slice(0, 200)}); keeping the image's Xcode`);
+  }
+  return undefined;
 }
 
 /**

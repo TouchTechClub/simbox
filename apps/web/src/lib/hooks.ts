@@ -6,7 +6,7 @@ export const queryKeys = {
   me: ["me"] as const,
   installations: ["installations"] as const,
   repoStatus: ["repoStatus"] as const,
-  currentRun: ["currentRun"] as const,
+  activeRuns: ["activeRuns"] as const,
   runs: ["runs"] as const,
   runnerSettings: ["runnerSettings"] as const,
 };
@@ -38,10 +38,10 @@ export function useRepoStatus(poll = false) {
   });
 }
 
-export function useCurrentRun() {
+export function useActiveRuns() {
   return useQuery({
-    queryKey: queryKeys.currentRun,
-    queryFn: api.currentRun,
+    queryKey: queryKeys.activeRuns,
+    queryFn: api.activeRuns,
     refetchInterval: 5_000,
     retry: false,
   });

@@ -53,15 +53,15 @@ program
 program
   .command("sim")
   .description("Ensure a run and its tunnel are ready for device commands")
-  .option("--new", "replace this platform's run with a fresh one")
+  .option("--new", "start another run instead of reusing one (others keep running until idle)")
   .addOption(
     platformOption(
-      "ios: macOS runner; android: Linux/KVM runner (omitted: reuse the only active run, else iOS)",
+      "ios: macOS runner; android: Linux/KVM runner (omitted: this agent's run's platform, else iOS)",
     ),
   )
   .option(
     "--runner <label-or-json>",
-    "override runner label or JSON label array; requires --platform",
+    'override runner: a label, JSON label array, or {"labels":[...],"maxDevices":2}; requires --platform',
   )
   .option(
     "--device <model>",
@@ -73,12 +73,12 @@ program
   )
   .option(
     "--foldable",
-    "boot a foldable: iPhone Duo (needs Xcode 27.1+, e.g. --runner xcode-27) or a 7.6in Android foldable; requires --platform",
+    "boot a foldable: iPhone Duo (needs Xcode 27.1+, the default xcode-27 runner has it) or a 7.6in Android foldable; requires --platform",
   )
   .option("--xcode <version>", "iOS: select this Xcode (e.g. 27.1) before the device daemon starts")
   .option(
     "--json",
-    "print {tunnel_url, daemon_token, run_id, expires_at, platform, booted_device} as JSON only",
+    "print {tunnel_url, daemon_token, run_id, expires_at, platform, booted_device, max_devices} as JSON only",
   )
   .action(
     (opts: {
@@ -99,7 +99,7 @@ program
 program
   .command("exec")
   .description(
-    "Run agent-device with fresh tunnel credentials and a cold-boot startup budget; --platform picks the run when both are active",
+    "Run agent-device on this agent's run with fresh tunnel credentials and a cold-boot startup budget; --platform picks iOS or Android, SIMBOX_RUN=<id> pins a run",
   )
   .argument("[args...]", "agent-device command and arguments")
   .allowUnknownOption()
@@ -112,7 +112,7 @@ program
 
 program
   .command("ps")
-  .description("Show active runs (at most one per platform)")
+  .description("Show active runs (several per platform; this agent's are marked)")
   .option("--json", "print {runs} as JSON")
   .action((opts: { json?: boolean }) => {
     requireToken();
@@ -121,10 +121,11 @@ program
 
 program
   .command("stop")
-  .description("Stop the active run (--platform picks one when both are active)")
-  .addOption(platformOption("stop this platform's run"))
+  .description("Stop this agent's runs (or the only platform's runs)")
+  .option("--run <id>", "stop one run")
+  .addOption(platformOption("stop this agent's run of this platform"))
   .option("--all", "stop every active run")
-  .action((opts: { platform?: DevicePlatform; all?: boolean }) => {
+  .action((opts: { platform?: DevicePlatform; all?: boolean; run?: string }) => {
     requireToken();
     return run(cmdStop(opts));
   });

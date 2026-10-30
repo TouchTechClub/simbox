@@ -4,10 +4,15 @@ import {
   type DeviceProfile,
   type DevicePreferences,
 } from "./device-profile.js";
+import { MAX_DEVICES_PER_RUN } from "./constants.js";
 
 export type DevicePlatform = "ios" | "android";
 export const PLATFORMS: readonly DevicePlatform[] = ["ios", "android"];
-export type RunnerTarget = { labels: string[] };
+export type RunnerTarget = {
+  labels: string[];
+  /** Devices this runner runs at once; omitted: sized from its vCPUs. */
+  maxDevices?: number;
+};
 export type RunnerPreferences = Record<DevicePlatform, RunnerTarget | null>;
 export type RunnerSource = "override" | "repository" | "account" | "default";
 export type ResolvedRunner = { runner: RunnerTarget; source: RunnerSource };
@@ -34,8 +39,12 @@ export interface RunnerDiagnostics {
   checks: Array<{ name: string; ok: boolean; message: string }>;
 }
 
+/**
+ * iOS defaults to GitHub's Xcode 27 image (a public preview): `macos-latest`
+ * only offers Xcode 26.
+ */
 export const DEFAULT_RUNNERS: Record<DevicePlatform, RunnerTarget> = {
-  ios: { labels: ["macos-latest"] },
+  ios: { labels: ["xcode-27"] },
   android: { labels: ["ubuntu-latest"] },
 };
 
@@ -46,10 +55,16 @@ export const RUNNER_PRESETS: Array<{
   runner: RunnerTarget;
 }> = [
   {
-    name: "GitHub macOS (ARM64)",
+    name: "GitHub Xcode 27 (ARM64, preview)",
     platform: "ios",
     provider: "github",
     runner: DEFAULT_RUNNERS.ios,
+  },
+  {
+    name: "GitHub macOS (ARM64, Xcode 26)",
+    platform: "ios",
+    provider: "github",
+    runner: { labels: ["macos-latest"] },
   },
   {
     name: "GitHub Ubuntu (x64/KVM)",
@@ -81,10 +96,20 @@ export function validateRunner(value: unknown, platform: DevicePlatform): Runner
     !value ||
     typeof value !== "object" ||
     Array.isArray(value) ||
-    Object.keys(value).some((key) => key !== "labels")
+    Object.keys(value).some((key) => key !== "labels" && key !== "maxDevices")
   ) {
-    throw new Error('Runner must be {labels: ["runner-label"]}.');
+    throw new Error('Runner must be {labels: ["runner-label"], maxDevices?: 1-3}.');
   }
+  const maxDevices = (value as { maxDevices?: unknown }).maxDevices;
+  if (
+    maxDevices !== undefined &&
+    (!Number.isInteger(maxDevices) ||
+      (maxDevices as number) < 1 ||
+      (maxDevices as number) > MAX_DEVICES_PER_RUN)
+  )
+    throw new Error(`maxDevices must be a whole number from 1 to ${MAX_DEVICES_PER_RUN}.`);
+  if (platform === "android" && maxDevices !== undefined && maxDevices !== 1)
+    throw new Error("Android runners run one emulator; maxDevices must be 1.");
   const labels = (value as { labels?: unknown }).labels;
   if (
     !Array.isArray(labels) ||
@@ -117,12 +142,27 @@ export function validateRunner(value: unknown, platform: DevicePlatform): Runner
       throw new Error("iOS requires a macOS ARM64 runner with Xcode.");
     }
   }
-  return { labels: [...labels] };
+  return {
+    labels: [...labels],
+    ...(maxDevices === undefined ? {} : { maxDevices: maxDevices as number }),
+  };
 }
 
-/** CLI/custom form accepts a single label or an explicit JSON label array. */
+/**
+ * CLI/custom form accepts a single label, a JSON label array, or a JSON runner
+ * object (`{"labels": [...], "maxDevices": 2}`).
+ */
 export function parseRunnerInput(input: string, platform: DevicePlatform): RunnerTarget {
   const text = input.trim();
+  if (text.startsWith("{")) {
+    let runner: unknown;
+    try {
+      runner = JSON.parse(text);
+    } catch {
+      throw new Error("Custom runner must be valid JSON.");
+    }
+    return validateRunner(runner, platform);
+  }
   let labels: unknown = [text];
   if (text.startsWith("[")) {
     try {
@@ -132,6 +172,32 @@ export function parseRunnerInput(input: string, platform: DevicePlatform): Runne
     }
   }
   return validateRunner({ labels }, platform);
+}
+
+/**
+ * Devices a runner with this many vCPUs runs at once. Small runners, such as
+ * GitHub's standard 3-vCPU Macs and 4-vCPU Linux runners, get one: a second
+ * simulator saturates them.
+ */
+export function deviceCapForCpus(vcpus: number): number {
+  return vcpus <= 4 ? 1 : vcpus <= 8 ? 2 : MAX_DEVICES_PER_RUN;
+}
+
+/**
+ * The device cap before the runner reports its own: the configured one, else
+ * sized from the vCPUs its labels name. Android runs one emulator; unknown
+ * labels are treated as small.
+ */
+export function estimateDeviceCap(platform: DevicePlatform, runner: RunnerTarget | null): number {
+  if (platform === "android") return 1;
+  if (runner?.maxDevices) return runner.maxDevices;
+  for (const label of runner?.labels ?? []) {
+    const vcpus = /(?:^|-)(\d+)vcpu(?:-|$)/i.exec(label)?.[1];
+    if (vcpus) return deviceCapForCpus(Number(vcpus));
+    // GitHub's M2 Pro "xlarge" Macs have 5 vCPUs.
+    if (/-xlarge$/i.test(label)) return deviceCapForCpus(5);
+  }
+  return 1;
 }
 
 export function parseRunnerPatch(value: unknown): Partial<RunnerPreferences> {
@@ -198,13 +264,19 @@ export function resolveDevice(
   return { device, sources };
 }
 
+/** Same labels; a cap on `b` must match too. */
 export function sameRunner(a: RunnerTarget | null, b: RunnerTarget): boolean {
   if (!a || a.labels.length !== b.labels.length) return false;
+  if (b.maxDevices !== undefined && a.maxDevices !== b.maxDevices) return false;
   const left = a.labels.map((label) => label.toLowerCase()).sort();
   const right = b.labels.map((label) => label.toLowerCase()).sort();
   return left.every((label, i) => label === right[i]);
 }
 
 export function formatRunner(runner: RunnerTarget | null): string {
-  return runner ? runner.labels.join(" + ") : "unknown (legacy workflow)";
+  if (!runner) return "unknown (legacy workflow)";
+  const labels = runner.labels.join(" + ");
+  return runner.maxDevices
+    ? `${labels} (${runner.maxDevices} device${runner.maxDevices === 1 ? "" : "s"})`
+    : labels;
 }

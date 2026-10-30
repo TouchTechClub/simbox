@@ -65,6 +65,9 @@ export function connectFlow(info: ConnectInfo, hints: ConnectHints, quiet = fals
     `  Pass --platform ${platform} whenever both an iOS and an Android run are active; use ${selector} to pick a specific device.\n`,
   );
   out.write(
+    `  This run (${info.runId}) is reserved for this agent; other agents get their own. SIMBOX_RUN=${info.runId} pins a shell to it.\n`,
+  );
+  out.write(
     "  exec supplies auth, refreshes tunnel URLs, and allows 5 minutes for cold startup.\n\n",
   );
   out.write(pc.dim("  manual connect:\n"));

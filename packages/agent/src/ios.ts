@@ -144,8 +144,8 @@ export function createIOSAdapter(options: { agentDeviceBin: () => string }): Pla
     platform: "ios",
     catalog,
     async select(selector) {
-      if (selector?.xcode || selector?.foldable)
-        await selectXcode({ version: selector.xcode, foldable: selector.foldable === true });
+      // Without a choice, the newest installed release Xcode.
+      await selectXcode({ version: selector?.xcode, foldable: selector?.foldable === true });
       const offered = await catalog();
       const { model, os } = pickOrThrow(selector, offered);
       const runtime = runtimes.find((r) => isIOSRuntime(r) && r.version === os.version)!;

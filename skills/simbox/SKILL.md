@@ -23,7 +23,7 @@ each command. Do not write global agent-device profiles or expose run JSON token
 ## Start and inspect
 
 ```bash
-simbox ps                               # at most one active run per platform
+simbox ps                               # active runs; marks this agent's
 simbox runners show
 simbox devices list --platform ios      # models/OS the runner reported
 simbox sim --platform ios --device "<model from devices list>" --os latest
@@ -31,9 +31,10 @@ simbox sim --platform android           # runs alongside the iOS run
 simbox exec devices --platform android
 ```
 
-iOS and Android runs are independent and can be active at once. **Always pass
-`--platform` to `sim`, `exec` and `stop`**. Reuse a compatible active run. `--new` replaces only that platform's run: ask
-before disrupting another session. Runner priority is explicit `--runner` →
+A platform can have several runs. **Always pass `--platform` to `sim`, `exec`
+and `stop`**; they use this agent's run. Hosted Macs run one device at a time:
+close devices when done. `device_cap` means the run is full: close your other
+device or `sim --new`. Runner priority is explicit `--runner` →
 repository override → account default → GitHub default; device model and OS
 defaults layer the same way, field by field. Custom labels can be a JSON array.
 Blacksmith needs its GitHub App and bills separately; do not silently select a

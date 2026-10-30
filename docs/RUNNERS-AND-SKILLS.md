@@ -7,7 +7,7 @@ Runner precedence for **new runs**:
 1. `simbox sim --platform <platform> --runner <label-or-json>`
 2. Connected repository override
 3. Simbox account default
-4. GitHub default (`ubuntu-latest` / `macos-latest`)
+4. Simbox default (`ubuntu-latest` / `xcode-27`, GitHub's Xcode 27 preview image)
 
 Configure Android/Linux and iOS/macOS independently on the dashboard's **Runners**
 page, or through the CLI:
@@ -28,13 +28,20 @@ survive repository disconnects. Repository overrides are attached to the current
 connected repository; this release does not add multiple simultaneous repositories.
 Repair updates the workflow/secret without clearing either settings layer.
 
-Each platform has at most one active run, and the iOS and Android runs are
-independent. Settings never migrate an active run. Plain `sim` reuses the only
-active run (otherwise iOS); `sim --platform <p>` reuses that platform's run even if
-defaults have changed. An explicitly different runner or device is rejected unless
-`--new` is requested, which replaces only that platform's run. History and `ps`
-record the selected runner and device, not a newly resolved default. Historical
-runs without recorded labels are marked unknown.
+A platform can have several active runs (up to 5 iOS, 10 Android), and iOS and
+Android runs are independent. Each caller (an agent thread or session, or
+`SIMBOX_HOLDER`) keeps the run `sim` gave it; a plain terminal is one shared
+caller. Settings never migrate an active run. `sim` reuses the caller's run of
+that platform (plain `sim`: the platform of its runs, otherwise iOS) even if
+defaults have changed. Otherwise it joins a run with a free device slot, or starts
+one. A run holds one device per 4 vCPUs (at most 3; GitHub's hosted Macs hold
+one, Android always one); `{"labels":[...],"maxDevices":N}` overrides it. A run
+whose runner or device does not match an explicit `--runner`/`--device` is
+skipped. `--new` always starts another run and retires only the caller's runs
+that are still starting. At the limit, `sim` shares the least busy run, and
+`sim --new` fails with `run_limit`. History and `ps` record the selected runner
+and device, not a newly resolved default. Historical runs without recorded labels
+are marked unknown.
 
 ### Workflow upgrade
 

@@ -67,7 +67,7 @@ test("workflow dispatch always carries platform and exact runner labels", async 
         ref: "main",
         inputs: {
           platform: "ios",
-          runner_labels: '["macos-latest"]',
+          runner_labels: '["xcode-27"]',
           simbox_run: "0b8f3c1e-8a4e-4d7c-9a51-3f0e8b2f6a10",
         },
       },

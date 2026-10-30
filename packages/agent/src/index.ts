@@ -9,7 +9,9 @@
  * Exit codes: 0 = clean shutdown (green check), 1 = failure (red X).
  */
 import { randomBytes } from "node:crypto";
+import { availableParallelism } from "node:os";
 import {
+  deviceCapForCpus,
   HARD_EXIT_MINUTES,
   HEARTBEAT_INTERVAL_SECONDS,
   IDLE_EXIT_MINUTES,
@@ -31,7 +33,9 @@ import { childEnv, pumpLines, relayFiltered, run, setSecretFilter } from "./proc
 import type { ChildProc } from "./proc.js";
 import { installAgentDevice, installCloudflared } from "./provision.js";
 import { ApiClient, HttpError, runIsOver } from "./api.js";
-import { countActiveDevices } from "./devices.js";
+import { activeSessionDevices } from "./devices.js";
+import { bootRefusal, devicesOverCap } from "./device-cap.js";
+import { simctlJson } from "./xcode.js";
 import { waitForAuthoritativeDns } from "./dns.js";
 import { startGateway } from "./gateway.js";
 import { createPreviewHub } from "./preview-hub.js";
@@ -110,6 +114,8 @@ const state = {
   /** Device preparation or emulator recovery is running: work, not idleness. */
   preparing: true,
   activeDevices: 0,
+  /** Devices this runner runs at once (configured, else sized from its vCPUs). */
+  maxDevices: 1,
   emulatorRestarts: 0,
   registered: false,
   shuttingDown: false,
@@ -395,6 +401,7 @@ async function register(): Promise<void> {
       cloudflared: PINS.cloudflared,
       deviceHub: PINS.deviceHub,
     },
+    maxDevices: state.maxDevices,
   };
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= REGISTER_ATTEMPTS; attempt++) {
@@ -580,6 +587,67 @@ function recoverEmulator(dead: ManagedChild): string | null {
     })
     .catch((err) => shutdown(`Android emulator relaunch failed: ${message(err)}`.slice(0, 200), 1));
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Device cap (iOS; an Android runner has a single emulator)
+// ---------------------------------------------------------------------------
+
+/** When each booted simulator was first seen booted. */
+const bootedSince = new Map<string, number>();
+
+async function bootedSimulators(): Promise<Set<string>> {
+  const { devices } = await simctlJson<{
+    devices: Record<string, Array<{ udid: string; state?: string }>>;
+  }>(["devices", "booted"]);
+  const ids = new Set(
+    Object.values(devices)
+      .flat()
+      .filter((device) => device.state === "Booted" && device.udid)
+      .map((device) => device.udid),
+  );
+  for (const id of bootedSince.keys()) if (!ids.has(id)) bootedSince.delete(id);
+  for (const id of ids) if (!bootedSince.has(id)) bootedSince.set(id, Date.now());
+  return ids;
+}
+
+const inUse = (sessions: Set<string> | null) =>
+  new Set([...(sessions ?? []), ...(state.gateway?.viewedDevices() ?? [])]);
+
+/** Device-panel boots wait for a free slot; idle devices do not hold one. */
+async function refuseBoot(target: string | null): Promise<string | null> {
+  if (state.platform !== "ios") return null;
+  const sessions = await activeSessionDevices(UPSTREAM_PORT, state.daemonToken);
+  return bootRefusal({
+    target,
+    booted: await bootedSimulators(),
+    inUse: inUse(sessions),
+    cap: state.maxDevices,
+  });
+}
+
+/** Shut down idle simulators above the cap; unknown sessions stop nothing. */
+async function enforceDeviceCap(sessions: Set<string> | null): Promise<void> {
+  if (state.platform !== "ios" || state.preparing || sessions === null) return;
+  let booted: Set<string>;
+  try {
+    booted = await bootedSimulators();
+  } catch (err) {
+    warn(`could not list booted simulators: ${message(err)}`);
+    return;
+  }
+  const victims = devicesOverCap({
+    booted: [...booted].map((id) => ({ id, since: bootedSince.get(id) ?? Date.now() })),
+    inUse: inUse(sessions),
+    cap: state.maxDevices,
+    now: Date.now(),
+  });
+  for (const id of victims) {
+    info(`shutting down idle simulator ${id}: this runner runs ${state.maxDevices} at a time`);
+    const result = await run(["xcrun", "simctl", "shutdown", id], { timeoutMs: 60_000 });
+    if (result.code !== 0)
+      warn(`simctl shutdown ${id} failed: ${result.stderr.trim().slice(-200)}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -772,8 +840,10 @@ async function supervise(): Promise<never> {
       proxyProbeFailures = 0;
     }
 
-    // --- device count ---
-    const deviceCount = await countActiveDevices(UPSTREAM_PORT, state.daemonToken);
+    // --- device count and cap ---
+    const sessions = await activeSessionDevices(UPSTREAM_PORT, state.daemonToken);
+    const deviceCount = sessions?.size ?? null;
+    if (!busy) await enforceDeviceCap(sessions);
     // Unknown inventory is not evidence that a session is idle. Hard exit
     // remains authoritative even if inventory is unavailable.
     if (deviceCount === null || deviceCount > 0) lastDeviceSeenAt = Date.now();
@@ -843,13 +913,18 @@ async function main(): Promise<void> {
   state.platform = config?.platform ?? hostPlatform(process.platform, Bun.env.SIMBOX_PLATFORM);
   state.device = config?.device ?? null;
   if (!state.runId && config?.runId && RUN_ID_RE.test(config.runId)) state.runId = config.runId;
+  state.maxDevices =
+    state.platform === "android"
+      ? 1
+      : (config?.maxDevices ?? deviceCapForCpus(availableParallelism()));
   const mismatch = hostMismatch(state.platform, process.platform);
   if (mismatch) {
     error(mismatch);
     await shutdown(mismatch, 1);
   }
   info(
-    `platform ${state.platform}; device ${state.device ? JSON.stringify(state.device) : "runner default"}`,
+    `platform ${state.platform}; device ${state.device ? JSON.stringify(state.device) : "runner default"}; ` +
+      `up to ${state.maxDevices} device${state.maxDevices === 1 ? "" : "s"} at a time (${availableParallelism()} vCPUs)`,
   );
 
   // 3. Choose the device before installing anything. agent-device resolves
@@ -909,6 +984,7 @@ async function main(): Promise<void> {
     token: state.daemonToken,
     previewPort: previewHub.port,
     restartPreviewHub: previewHub.restart,
+    beforeBoot: refuseBoot,
   });
   await state.gateway.ready;
   await waitForProxy(`http://127.0.0.1:${PROXY_PORT}/agent-device/health`);

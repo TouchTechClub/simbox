@@ -27,7 +27,7 @@ import { clearCachedRun } from "./run-cache.js";
 import {
   defaultRunsDeps,
   PLATFORM_NAMES,
-  refreshPlatform,
+  refreshRun,
   targetPlatform,
   waitForRemote,
   waitForRun,
@@ -222,8 +222,8 @@ export async function cmdSim(opts: SimOptions, deps: Partial<RunsDeps> = {}): Pr
     request.device,
   );
 
-  // Follow THE run ensure returned, by id: with two platforms active "the
-  // current run" may be the other one. Wait for live + devices ready.
+  // Follow THE run ensure returned, by id: other agents' runs may be active
+  // on the same platform. Wait for live + devices ready.
   const spinner = new Spinner(`Run ${first.state}`);
   spinner.begin();
   let ready: { run: PublicRun; info: ConnectInfo };
@@ -245,7 +245,7 @@ export async function cmdSim(opts: SimOptions, deps: Partial<RunsDeps> = {}): Pr
   const { run } = ready;
   const info = await waitForRemote(ready.info, {
     probe: all.probe,
-    refresh: () => refreshPlatform(run.platform, all),
+    refresh: () => refreshRun(run.id, all),
   });
   all.writeCache(run.platform, info);
   registerDevice(info, { platform: run.platform });
@@ -258,6 +258,7 @@ export async function cmdSim(opts: SimOptions, deps: Partial<RunsDeps> = {}): Pr
       expires_at: info.expiresAt,
       platform: run.platform,
       booted_device: run.bootedDevice ?? null,
+      max_devices: run.maxDevices ?? null,
     };
     process.stdout.write(JSON.stringify(payload) + "\n");
     return;
@@ -279,7 +280,9 @@ function stateColor(state: string): (text: string) => string {
 
 export function printRun(run: PublicRun): void {
   const booted = run.bootedDevice;
-  console.log(`${pc.bold(PLATFORM_NAMES[run.platform])} run ${run.id}`);
+  console.log(
+    `${pc.bold(PLATFORM_NAMES[run.platform])} run ${run.id}${run.held ? pc.dim(" (this agent's)") : ""}`,
+  );
   console.log(`  state:          ${stateColor(run.state)(run.state)}`);
   console.log(`  runner:         ${formatRunner(run.runner)}`);
   console.log(`  requested:      ${formatDeviceProfile(run.device ?? null, run.platform)}`);
@@ -291,7 +294,7 @@ export function printRun(run: PublicRun): void {
     }`,
   );
   console.log(`  devices_ready:  ${run.devicesReady ? "yes" : "no"}`);
-  console.log(`  active_devices: ${run.activeDevices}`);
+  console.log(`  active_devices: ${run.activeDevices}/${run.maxDevices ?? "?"}`);
   console.log(`  gh_run_id:      ${run.ghRunId ?? pc.dim("pending")}`);
   console.log(`  expires:        ${run.expiresAt ? fmtCountdown(run.expiresAt) : pc.dim("n/a")}`);
   if (run.endReason) console.log(`  end_reason:     ${run.endReason}`);
@@ -316,21 +319,34 @@ export async function cmdPs(opts: { json?: boolean } = {}): Promise<void> {
 // ---- stop ----
 
 export async function cmdStop(
-  opts: { platform?: DevicePlatform; all?: boolean } = {},
+  opts: { platform?: DevicePlatform; all?: boolean; run?: string } = {},
 ): Promise<void> {
-  if (opts.all && opts.platform) throw new CliError("Use either --platform or --all, not both.");
+  if ([opts.all, opts.platform, opts.run].filter(Boolean).length > 1)
+    throw new CliError("Use one of --run, --platform or --all.");
   const active = await activeRuns();
   let targets: PublicRun[];
   if (opts.all) targets = active;
-  else if (opts.platform) targets = active.filter((run) => run.platform === opts.platform);
-  else if (!active.length) targets = [];
-  else {
-    const platform = targetPlatform(
-      undefined,
-      active,
-      "Pass --platform ios|android to stop one, or --all to stop both.",
-    );
-    targets = active.filter((run) => run.platform === platform);
+  else if (opts.run) {
+    targets = active.filter((run) => run.id === opts.run);
+    if (!targets.length) throw new CliError(`No active run ${opts.run}. Check \`simbox ps\`.`);
+  } else {
+    // This agent's runs: another agent may be using the platform's others.
+    const scope = opts.platform ? active.filter((run) => run.platform === opts.platform) : active;
+    targets = scope.filter((run) => run.held);
+    if (!targets.length && scope.length) {
+      const platform =
+        opts.platform ??
+        targetPlatform(
+          undefined,
+          active,
+          "Pass --run <id> or --platform ios|android to stop runs, or --all to stop every run.",
+        );
+      targets = active.filter((run) => run.platform === platform);
+      if (targets.length > 1)
+        throw new CliError(
+          `${targets.length} ${PLATFORM_NAMES[platform]} runs are active (${targets.map((run) => run.id).join(", ")}) and none is this agent's. Pass --run <id>, or --all to stop every run.`,
+        );
+    }
   }
   if (!targets.length) {
     if (opts.platform) clearCachedRun(opts.platform);

@@ -55,6 +55,10 @@ export interface PublicRun {
   tunnelUrl: string | null;
   daemonToken: string | null;
   activeDevices: number;
+  /** Devices the runner runs at once; estimated until the runner reports it. */
+  maxDevices: number | null;
+  /** Reserved for the caller that asked (`holder`); only set when one was given. */
+  held?: boolean;
   androidReady: boolean;
   /** The run's devices are booted and accept commands. */
   devicesReady: boolean;
@@ -63,7 +67,7 @@ export interface PublicRun {
   endReason: string | null;
 }
 
-/** GET /v1/runs/active — at most one active run per platform. */
+/** GET /v1/runs/active[?holder=] — every starting, live or closing run. */
 export interface ActiveRunsResponse {
   runs: PublicRun[];
 }
@@ -78,6 +82,7 @@ export interface RunSummary {
   device: DeviceProfile | null;
   bootedDevice: BootedDevice | null;
   activeDevices: number;
+  maxDevices: number | null;
   createdAt: number;
   endedAt: number | null;
   endReason: string | null;
@@ -86,8 +91,13 @@ export interface RunSummary {
 // ---- API contracts ----
 
 export interface EnsureRunRequest {
-  /** Replace this platform's active run instead of reusing it. */
+  /** Start another run instead of reusing one. Other runs keep running. */
   new?: boolean;
+  /**
+   * Opaque caller identity (an agent thread or session). Each holder keeps
+   * its run across calls, and runs at their device cap go to other holders.
+   */
+  holder?: string;
   /** Omitted: reuse the only active run, else start iOS. */
   platform?: "ios" | "android";
   runner?: RunnerTarget;
@@ -127,6 +137,8 @@ export interface RunRegisterRequest {
     cloudflared: string;
     deviceHub?: string;
   };
+  /** Devices this runner runs at once (newer agents). */
+  maxDevices?: number;
 }
 
 export interface RunTunnelRequest {
@@ -144,6 +156,8 @@ export interface RunConfigResponse {
   platform: "ios" | "android";
   device: DeviceProfile | null;
   runId?: string;
+  /** A configured device cap; omitted: the runner sizes it from its vCPUs. */
+  maxDevices?: number;
 }
 
 /** POST /v1/runs/inventory — what the runner offers and what it booted. */

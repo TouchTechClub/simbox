@@ -1,10 +1,13 @@
 import type { Server, ServerWebSocket } from "bun";
 import { validPreviewDevice } from "@simbox/shared";
+import { bootTarget } from "./device-cap.js";
 
 export interface DeviceHubSocket {
   nativeHub: true;
   upstream: WebSocket;
   platform: "ios" | "android" | "inventory";
+  /** The device this socket views or controls. */
+  device?: string;
   timer?: ReturnType<typeof setTimeout>;
   rateAt: number;
   rateCount: number;
@@ -49,6 +52,8 @@ export function createDeviceHubGateway(options: {
   inventoryFreshMs?: number;
   /** How long discovery waits on a slow listing before falling back. */
   inventoryWaitMs?: number;
+  /** Why a boot would exceed the runner's device cap, or null to allow it. */
+  beforeBoot?: (target: string | null) => Promise<string | null>;
 }) {
   const sockets = new Set<ServerWebSocket<DeviceHubSocket>>();
   const upstreams = new Set<WebSocket>();
@@ -140,6 +145,16 @@ export function createDeviceHubGateway(options: {
         if (body && Buffer.byteLength(body) > 16_384)
           return new Response("Payload too large", { status: 413 });
         if (req.method === "POST") options.activity();
+        if (req.method === "POST" && path === "/api/devices/boot" && options.beforeBoot) {
+          const refusal = await options
+            .beforeBoot(bootTarget(url.searchParams, body))
+            .catch(() => null);
+          if (refusal)
+            return Response.json(
+              { error: "device_cap", message: refusal },
+              { status: 409, headers: NO_CACHE },
+            );
+        }
         try {
           const upstream = await fetch(`${origin}${path}${url.search}`, {
             method: req.method,
@@ -193,6 +208,7 @@ export function createDeviceHubGateway(options: {
           nativeHub: true,
           upstream,
           platform: platform!,
+          ...(device ? { device } : {}),
           rateAt: 0,
           rateCount: 0,
           pending,
@@ -258,6 +274,14 @@ export function createDeviceHubGateway(options: {
         ws.data.upstream.close();
         upstreams.delete(ws.data.upstream);
       },
+    },
+    /** Devices a native panel is viewing or controlling right now. */
+    viewedDevices(): Set<string> {
+      return new Set(
+        [...sockets].flatMap((ws) =>
+          ws.data.platform !== "inventory" && ws.data.device ? [ws.data.device] : [],
+        ),
+      );
     },
     stop() {
       stopped = true;

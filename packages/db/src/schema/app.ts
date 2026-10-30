@@ -1,5 +1,12 @@
 import { sql } from "drizzle-orm";
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  index,
+  integer,
+  primaryKey,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 import type {
   BootedDevice,
   DeviceProfile,
@@ -87,6 +94,10 @@ export const runs = sqliteTable(
     tunnel_hostname: text("tunnel_hostname"),
     tunnel_dns_record_id: text("tunnel_dns_record_id"),
     active_devices: integer("active_devices").notNull().default(0),
+    /** Devices the runner runs at once: estimated at dispatch, then reported by the runner. */
+    max_devices: integer("max_devices"),
+    /** The caller that dispatched it (`EnsureRunRequest.holder`); null for none. */
+    holder: text("holder"),
     android_ready: integer("android_ready").notNull().default(0),
     /** Agents that report readiness for both platforms; null for older agents. */
     devices_ready: integer("devices_ready"),
@@ -99,10 +110,23 @@ export const runs = sqliteTable(
   },
   (table) => [
     index("idx_runs_user_created").on(table.user_id, sql`${table.created_at} desc`),
-    // One starting-or-live run per platform; the database settles racing ensures.
-    // "closing" is excluded so a replacement can start while the old run winds down.
-    uniqueIndex("uniq_runs_active_platform")
-      .on(table.user_id, table.platform)
-      .where(sql`${table.state} in ('dispatching', 'queued', 'booting', 'live')`),
+    // Several runs per platform may be live, but each caller starts at most one
+    // at a time per platform: the database settles a caller's racing ensures.
+    uniqueIndex("uniq_runs_starting_holder")
+      .on(table.user_id, table.platform, table.holder)
+      .where(sql`${table.state} in ('dispatching', 'queued', 'booting')`),
   ],
+);
+
+/** Callers a run is reserved for, refreshed by each `ensure` that returns it. */
+export const runHolders = sqliteTable(
+  "run_holders",
+  {
+    run_id: text("run_id")
+      .notNull()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    holder: text("holder").notNull(),
+    seen_at: integer("seen_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.run_id, table.holder] })],
 );

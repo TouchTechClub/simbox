@@ -11,8 +11,12 @@ Free on-demand iOS simulators & Android emulators running on your own GitHub Act
 3. `simbox sim` asks our API for a run → we `workflow_dispatch` into your repo → your selected macOS/iOS or Linux/Android runner boots the requested device, then `agent-device proxy` + a Cloudflare tunnel → the tunnel URL + daemon token come back to your CLI.
 4. Drive sims/emulators with `simbox exec <agent-device command>` until the run ends (idle timeout, `simbox stop`, or ~6h).
 
-You can have one active run per platform: an iOS run and an Android run start,
-reuse and stop independently.
+Several runs can be live at once: up to 5 iOS and 10 Android runs per account
+(GitHub runs at most 5 macOS jobs at a time below Enterprise; extra jobs wait in
+its queue). Each agent keeps the run `simbox sim` gave it. A small runner (4
+vCPUs or fewer, which includes GitHub's hosted Macs) runs one device at a time,
+so another agent gets a new run rather than a busy one. At the limit, agents
+share the least busy run.
 
 ## Use
 
@@ -29,9 +33,13 @@ simbox exec close --shutdown --platform ios
 simbox stop --platform ios   # or --all
 ```
 
-`simbox ps` lists active runs (at most one per platform). `exec` and `stop` go
-to the run named by `--platform`, else to the only active run; with both an
+`simbox ps` lists active runs and marks this agent's. `exec` and `stop` go to
+this agent's run of `--platform`, else to the platform's only run. With both an
 iOS and an Android run active, pass `--platform` on every command.
+`SIMBOX_RUN=<id>` pins a shell to one run, and `simbox stop --run <id>` stops
+one. An agent is identified by its thread or session (`T3CODE_THREAD_ID`,
+`CLAUDE_CODE_SESSION_ID`), or by `SIMBOX_HOLDER`; a plain terminal is one
+shared caller.
 
 `--device` and `--os` (`18.4`, `18` for the newest 18.x, an Android API level,
 `latest` or `oldest`) require `--platform`. `simbox devices list` shows the
@@ -54,14 +62,19 @@ final command result is returned when ready.
 iOS runs boot their iPhone and build agent-device's XCTest runner before the
 run goes live, which adds a few minutes to startup. A simulator's first boot
 saturates the 3-vCPU hosted Macs for several minutes; commands sent during it
-time out and the tunnel drops. The runner also turns off host Spotlight
+time out and the tunnel drops. So a runner boots one device per 4 vCPUs (at most
+3), and shuts down idle simulators beyond that; set `maxDevices` in a JSON
+`--runner` to override, for example
+`--runner '{"labels":["blacksmith-12vcpu-macos-latest"],"maxDevices":2}'`. The runner also turns off host Spotlight
 indexing and raises cloudflared's priority. Warmup failures are warnings, not
-fatal run failures. Android runs on Linux and never waits for iOS. The generated workflow uses stable `macos-latest`; preview-only device
-types require a preview runner such as `--runner xcode-27`.
+fatal run failures. Android runs on Linux and never waits for iOS. iOS runs
+default to GitHub's Xcode 27 image (`xcode-27`, a public preview) and use its
+newest release Xcode; `--runner macos-latest` gives Xcode 26. A manual Actions
+dispatch with empty `runner_labels` still uses `macos-latest`.
 
 Android requires **Linux/KVM**: GitHub's ARM macOS VMs cannot initialize HVF
 for the emulator, even when `-accel-check` reports success. Start with
-`simbox sim --platform android`; `--new` replaces only that platform's run.
+`simbox sim --platform android`; `--new` starts another run.
 Without a platform flag, `sim` reuses the only active run, else uses iOS.
 
 Update the CLI and run `simbox repair` once (merge its PR if the branch is

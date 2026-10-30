@@ -14,6 +14,8 @@ export function startGateway(options: {
   previewPlatform?: "ios" | "android";
   previewSessionMs?: number;
   restartPreviewHub?: () => Promise<void>;
+  /** Why a device-panel boot would exceed the runner's device cap, or null. */
+  beforeBoot?: (target: string | null) => Promise<string | null>;
 }) {
   let inFlight = 0;
   let lastActivityAt = Date.now();
@@ -41,6 +43,7 @@ export function startGateway(options: {
       lastActivityAt = Date.now();
     },
     video: (req) => preview.fetch(req, server as Server<PreviewSocket>),
+    beforeBoot: options.beforeBoot,
   });
   const server = Bun.serve<PreviewSocket | DeviceHubSocket>({
     hostname: "127.0.0.1",
@@ -208,6 +211,8 @@ export function startGateway(options: {
   return {
     server,
     activity: () => ({ inFlight, lastActivityAt }),
+    /** Devices any browser or device panel is viewing or controlling. */
+    viewedDevices: () => new Set([...preview.viewedDevices(), ...nativeHub.viewedDevices()]),
     ready: Promise.resolve(),
     stopPreview: () => {
       preview.stop();

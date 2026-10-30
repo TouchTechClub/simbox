@@ -5,8 +5,9 @@
  *
  * Writes are compare-and-set on the state the caller read: a slow webhook or
  * reconcile can never move a run backwards (live → booting) or revive one that
- * already ended. Each user has at most one starting-or-live run per platform,
- * enforced by the `uniq_runs_active_platform` index.
+ * already ended. A user may have several runs per platform (up to
+ * MAX_ACTIVE_RUNS); each caller starts at most one at a time, enforced by the
+ * `uniq_runs_starting_holder` index.
  */
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { createDb, schema, type Database } from "@simbox/db";
@@ -338,7 +339,7 @@ export async function reconcileRun(
 // Queries
 // ---------------------------------------------------------------------------
 
-/** Non-terminal runs, newest first: at most one active per platform, plus closing ones. */
+/** Non-terminal runs, newest first. */
 export async function openRuns(db: Database, userId: string): Promise<RunRow[]> {
   return db
     .select()
@@ -348,18 +349,17 @@ export async function openRuns(db: Database, userId: string): Promise<RunRow[]> 
     .all();
 }
 
-/** Each platform's current run after lazy reconciliation, iOS first. */
+/** Every open run after lazy reconciliation: iOS first, newest first within a platform. */
 export async function activeRuns(
   ctx: LifecycleContext,
   userId: string,
   repo: RepoRow | null,
 ): Promise<RunRow[]> {
-  const byPlatform = new Map<DevicePlatform, RunRow>();
+  const byPlatform = new Map<DevicePlatform, RunRow[]>();
   for (const candidate of await openRuns(ctx.db, userId)) {
     const run = await reconcileRun(ctx, candidate, repo);
-    // Newest first, so a closing run only shows while nothing newer holds its platform.
-    if (isTerminal(run.state) || byPlatform.has(run.platform)) continue;
-    byPlatform.set(run.platform, run);
+    if (isTerminal(run.state)) continue;
+    byPlatform.set(run.platform, [...(byPlatform.get(run.platform) ?? []), run]);
   }
   return PLATFORMS.flatMap((platform) => byPlatform.get(platform) ?? []);
 }

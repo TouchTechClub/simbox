@@ -247,6 +247,27 @@ test("ps lists every active run; stop needs a platform when two are active", asy
   expect((await simbox("stop", "--all")).stdout).toContain("No active run");
 });
 
+test("stop --platform stops only this agent's run when several are active", async () => {
+  active = [run("ios", { id: "mine", held: true }), run("ios", { id: "theirs", held: false })];
+  calls.length = 0;
+  const mine = await simbox("stop", "--platform", "ios");
+  expect(mine.code).toBe(0);
+  expect(calls.filter((call) => call.path.endsWith("/stop")).map((call) => call.path)).toEqual([
+    "/v1/runs/mine/stop",
+  ]);
+
+  // Neither is this agent's: name one rather than stop someone else's.
+  active = [run("ios", { id: "a" }), run("ios", { id: "b" })];
+  calls.length = 0;
+  const ambiguous = await simbox("stop", "--platform", "ios");
+  expect(ambiguous.code).toBe(1);
+  expect(ambiguous.stderr).toContain("2 iOS runs are active (a, b)");
+  expect(calls.some((call) => call.path.endsWith("/stop"))).toBe(false);
+  expect((await simbox("stop", "--run", "b")).code).toBe(0);
+  expect(calls.at(-1)?.path).toBe("/v1/runs/b/stop");
+  active = [];
+});
+
 test("exec routes by --platform or the only active run, never across platforms", async () => {
   active = [run("ios"), run("android")];
   const routed = () =>
@@ -257,7 +278,7 @@ test("exec routes by --platform or the only active run, never across platforms",
       .at(-1)!;
   const ambiguous = await simbox("exec", "snapshot");
   expect(ambiguous.code).toBe(1);
-  expect(ambiguous.stderr).toContain("Two runs are active");
+  expect(ambiguous.stderr).toContain("iOS and Android runs are active");
 
   expect((await simbox("exec", "snapshot", "--platform=android")).code).toBe(0);
   let last = routed();
@@ -271,7 +292,7 @@ test("exec routes by --platform or the only active run, never across platforms",
   expect(last.args).toContain(`${base()}/ios/agent-device`);
 
   // Both platforms are cached now; without a flag it is still ambiguous.
-  expect((await simbox("exec", "snapshot")).stderr).toContain("Two runs are active");
+  expect((await simbox("exec", "snapshot")).stderr).toContain("iOS and Android runs are active");
 
   active = [run("android")];
   writeFileSync(cacheFile("ios"), "{}");

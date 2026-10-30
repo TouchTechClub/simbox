@@ -7,7 +7,7 @@ import type { ConnectInfo } from "./connect.js";
 import { sleep } from "./util.js";
 import { registerDevice } from "./device-registration.js";
 import { writeCachedRun } from "./run-cache.js";
-import { connectForArgs, probeRemote, refreshPlatform, waitForRemote } from "./runs.js";
+import { connectForArgs, probeRemote, refreshRun, waitForRemote } from "./runs.js";
 
 export const STARTUP_TIMEOUT_MS = 300_000;
 
@@ -88,8 +88,8 @@ export async function cmdExec(args: string[]): Promise<void> {
   }
   const bin = findAgentDevice();
   if (!bin) throw new CliError("Install agent-device first: npm i -g agent-device@0.21.28");
-  // Each platform has its own run and cache; the platform is explicit, or the
-  // only one active. An iOS endpoint never serves an Android command.
+  // Each agent uses its own run and cache; the platform is explicit, or the
+  // only one this agent uses. An iOS endpoint never serves an Android command.
   const { platform, info } = await connectForArgs(args);
   const replaySafe = REPLAY_SAFE.has(args[0]!);
   let connected: ConnectInfo = info;
@@ -101,9 +101,10 @@ export async function cmdExec(args: string[]): Promise<void> {
     );
     await sleep(attempt * 5_000);
     if (!(await probeRemote(connected))) {
-      const refreshed = await refreshPlatform(platform);
-      if (!refreshed || refreshed.runId !== connected.runId) break;
-      connected = await waitForRemote(refreshed, { refresh: () => refreshPlatform(platform) });
+      const runId = connected.runId;
+      const refreshed = await refreshRun(runId);
+      if (!refreshed) break;
+      connected = await waitForRemote(refreshed, { refresh: () => refreshRun(runId) });
       writeCachedRun(platform, connected);
     }
     result = await runRemote(bin, args, connected, replaySafe);

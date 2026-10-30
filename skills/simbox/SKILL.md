@@ -32,9 +32,8 @@ simbox exec devices --platform android
 ```
 
 A platform can have several runs. **Always pass `--platform` to `sim`, `exec`
-and `stop`**; they use this agent's run. Hosted Macs run one device at a time:
-close devices when done. `device_cap` means the run is full: close your other
-device or `sim --new`. Runner priority is explicit `--runner` →
+and `stop`**; they use this agent's run. Hosted Macs fit one device at a time:
+close devices when done, or use `sim --new` for another run. Runner priority is explicit `--runner` →
 repository override → account default → GitHub default; device model and OS
 defaults layer the same way, field by field. Custom labels can be a JSON array.
 Blacksmith needs its GitHub App and bills separately; do not silently select a

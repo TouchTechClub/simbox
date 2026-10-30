@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { bootRefusal, bootTarget, devicesOverCap } from "../packages/agent/src/device-cap";
 import { releaseXcodeBundles } from "../packages/agent/src/xcode";
 import {
   deviceCapForCpus,
@@ -39,41 +38,6 @@ test("a runner may configure its device cap", () => {
   expect(formatRunner({ labels: ["self-hosted"], maxDevices: 2 })).toBe("self-hosted (2 devices)");
   expect(sameRunner({ labels: ["a"], maxDevices: 2 }, { labels: ["a"] })).toBe(true);
   expect(sameRunner({ labels: ["a"] }, { labels: ["a"], maxDevices: 2 })).toBe(false);
-});
-
-test("idle devices above the cap stop, oldest first; in-use and just-booted ones never", () => {
-  const now = 1_000_000;
-  const booted = [
-    { id: "warm", since: now - 600_000 },
-    { id: "session", since: now - 500_000 },
-    { id: "viewed", since: now - 400_000 },
-    { id: "fresh", since: now - 10_000 },
-  ];
-  expect(devicesOverCap({ booted, inUse: new Set(["session"]), cap: 1, now })).toEqual([
-    "warm",
-    "viewed",
-  ]);
-  expect(devicesOverCap({ booted, inUse: new Set(["session", "viewed"]), cap: 2, now })).toEqual([
-    "warm",
-  ]);
-  // Over the cap with everything in use: nothing is stopped.
-  expect(
-    devicesOverCap({ booted, inUse: new Set(["warm", "session", "viewed"]), cap: 1, now }),
-  ).toEqual([]);
-  expect(devicesOverCap({ booted: booted.slice(0, 1), inUse: new Set(), cap: 1, now })).toEqual([]);
-});
-
-test("a panel boot waits for a free slot; idle devices and already-booted targets do not", () => {
-  const booted = new Set(["a", "b"]);
-  expect(bootRefusal({ target: "c", booted, inUse: new Set(), cap: 1 })).toBeNull();
-  expect(bootRefusal({ target: "b", booted, inUse: new Set(["a"]), cap: 1 })).toBeNull();
-  const refusal = bootRefusal({ target: "c", booted, inUse: new Set(["a"]), cap: 1 });
-  expect(refusal).toContain("runs 1 device at a time and one is in use");
-  expect(refusal).toContain("simbox sim --new");
-  expect(bootRefusal({ target: "c", booted, inUse: new Set(["a"]), cap: 2 })).toBeNull();
-  expect(bootTarget(new URLSearchParams("udid=x"), undefined)).toBe("x");
-  expect(bootTarget(new URLSearchParams(), '{"udid":"y"}')).toBe("y");
-  expect(bootTarget(new URLSearchParams(), "nope")).toBeNull();
 });
 
 test("the default Xcode is the newest release, never an RC behind a release-looking link", () => {

@@ -137,7 +137,7 @@ export interface RunRegisterRequest {
     cloudflared: string;
     deviceHub?: string;
   };
-  /** Devices this runner runs at once (newer agents). */
+  /** Devices this runner runs at once, when it reports them; else the API estimates it. */
   maxDevices?: number;
 }
 
@@ -156,7 +156,7 @@ export interface RunConfigResponse {
   platform: "ios" | "android";
   device: DeviceProfile | null;
   runId?: string;
-  /** A configured device cap; omitted: the runner sizes it from its vCPUs. */
+  /** The runner's configured device count, if set. */
   maxDevices?: number;
 }
 

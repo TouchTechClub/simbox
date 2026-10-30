@@ -62,9 +62,9 @@ final command result is returned when ready.
 iOS runs boot their iPhone and build agent-device's XCTest runner before the
 run goes live, which adds a few minutes to startup. A simulator's first boot
 saturates the 3-vCPU hosted Macs for several minutes; commands sent during it
-time out and the tunnel drops. So a runner boots one device per 4 vCPUs (at most
-3), and shuts down idle simulators beyond that; set `maxDevices` in a JSON
-`--runner` to override, for example
+time out and the tunnel drops. So Simbox counts a run as full at one device per
+4 vCPUs (at most 3) and sends other agents to another run; set `maxDevices` in a
+JSON `--runner` to override, for example
 `--runner '{"labels":["blacksmith-12vcpu-macos-latest"],"maxDevices":2}'`. The runner also turns off host Spotlight
 indexing and raises cloudflared's priority. Warmup failures are warnings, not
 fatal run failures. Android runs on Linux and never waits for iOS. iOS runs

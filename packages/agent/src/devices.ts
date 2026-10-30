@@ -1,5 +1,5 @@
-/** Devices with a real session, not the idle simulator prewarmed by the agent. */
-export function sessionDeviceIds(body: unknown): Set<string> | null {
+/** Count real sessions, not the idle simulator prewarmed by the agent. */
+export function sessionDeviceCount(body: unknown): number | null {
   const rpc = body as {
     result?: {
       ok?: boolean;
@@ -11,24 +11,12 @@ export function sessionDeviceIds(body: unknown): Set<string> | null {
   for (const session of rpc.result.data.sessions) {
     const id = session?.device_id ?? session?.id;
     if (typeof id !== "string" || !id) return null;
-    ids.add(id);
+    ids.add(`${session.platform ?? "unknown"}:${id}`);
   }
-  return ids;
-}
-
-/** Count real sessions, not the idle simulator prewarmed by the agent. */
-export function sessionDeviceCount(body: unknown): number | null {
-  return sessionDeviceIds(body)?.size ?? null;
+  return ids.size;
 }
 
 export async function countActiveDevices(port: number, token: string): Promise<number | null> {
-  return (await activeSessionDevices(port, token))?.size ?? null;
-}
-
-export async function activeSessionDevices(
-  port: number,
-  token: string,
-): Promise<Set<string> | null> {
   try {
     // Bypass the activity gateway: this supervisor probe must not reset idle.
     const response = await fetch(`http://127.0.0.1:${port}/agent-device/rpc`, {
@@ -43,7 +31,7 @@ export async function activeSessionDevices(
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) return null;
-    return sessionDeviceIds(await response.json());
+    return sessionDeviceCount(await response.json());
   } catch {
     return null;
   }

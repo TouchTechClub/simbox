@@ -324,10 +324,6 @@ export function createPreviewGateway(options: {
         data.upstream.close();
       },
     },
-    /** Devices a dashboard preview is viewing or controlling right now. */
-    viewedDevices(): Set<string> {
-      return new Set([...sockets].map((socket) => socket.data.device));
-    },
     stop() {
       stopped = true;
       for (const socket of sockets) {

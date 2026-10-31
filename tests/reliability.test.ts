@@ -85,6 +85,7 @@ test("Simlock warms only the run's target and caps leases at the run's devices",
   expect(ios["update.check"]).toBe("false");
   expect(ios["capabilities.agent-device.enabled"]).toBe("true");
   expect(ios["android.emulator.headless"]).toBeUndefined();
+  expect(ios["capacity.config.limits.ios.maxDevices"]).toBe("4");
   const android = Object.fromEntries(
     simlockSettings({
       target: { platform: "android", model: "pixel_8", osVersion: "35", count: 1 },
@@ -92,6 +93,7 @@ test("Simlock warms only the run's target and caps leases at the run's devices",
     }),
   );
   expect(android["lease.maxPerRequester"]).toBe("1");
+  expect(android["capacity.config.limits.android.maxDevices"]).toBe("2");
   expect(android["android.emulator.headless"]).toBe("true");
   expect(android["downloads.acceptAndroidLicenses"]).toBe("true");
 });

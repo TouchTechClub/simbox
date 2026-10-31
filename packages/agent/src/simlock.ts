@@ -103,6 +103,12 @@ export function simlockSettings(options: {
     ["warmPool.targets", JSON.stringify([target])],
     // Every client of a run shares its one agent token: one Simlock requester.
     ["lease.maxPerRequester", String(Math.max(1, options.maxDevices))],
+    // Simlock counts a device whose boot failed against this limit; one spare
+    // lets it provision a replacement (the running limit still applies).
+    [
+      `capacity.config.limits.${target.platform}.maxDevices`,
+      String(Math.max(1, options.maxDevices) + 1),
+    ],
   ];
   if (target.platform === "android")
     settings.push(
@@ -127,10 +133,11 @@ export function createSimlock(bins: SimlockBins) {
     }
   }
 
-  async function logs(lines = 80): Promise<void> {
+  /** Simlock's warnings and errors; its request log would drown them. */
+  async function logs(lines = 60): Promise<void> {
     const res = await simlock(["daemon", "logs"], 15_000);
-    for (const line of res.stdout.trimEnd().split("\n").slice(-lines))
-      if (line.trim()) relayFiltered("simlock", line);
+    const notable = res.stdout.split("\n").filter((line) => /"level":"(warn|error)"/.test(line));
+    for (const line of notable.slice(-lines)) relayFiltered("simlock", line);
   }
 
   return {

@@ -67,8 +67,8 @@ enables control; coordinate before mixing browser and CLI inputs.
 
 ## Test
 
-The first `open` leases the run's warm device (the one `simbox sim` printed);
-do not pass `--device`, `--udid` or `--serial`.
+The first `open` leases the run's warm device; do not pass `--device`,
+`--udid` or `--serial`.
 
 ```bash
 simbox exec open --platform android        # lease the device
@@ -84,8 +84,7 @@ For iOS, open `com.apple.Preferences` first and install the simulator `.app`
 build, not a device IPA.
 Check `agent-device help <command>` when unsure. Take a fresh snapshot after
 navigation; old refs may be invalid. Screenshots are visual evidence, not
-proof of backend behavior. Use `--session <name>` consistently for multiple
-independent device sessions; otherwise Simbox uses a stable run-scoped session.
+proof of backend behavior.
 
 ## Recovery and cleanup
 
@@ -97,9 +96,8 @@ independent device sessions; otherwise Simbox uses a stable run-scoped session.
 - Report platform, run ID, booted device/OS, Actions link, tested behavior,
   evidence paths, and limitations.
   Redact daemon tokens, tunnel credentials, pairing codes, and auth files.
-- Close sessions you created with `simbox exec close --platform <p>`. Closing
-  releases the lease and Simlock erases the device, so close only when done
-  with its state. Use
+- `simbox exec close --platform <p>` releases the lease and erases the
+  device; close only when done with its state. Use
   `simbox stop --platform <p>` when finished with a run you own; `--all` stops
   both, so do not use it while another agent uses the other platform. A screenshot
   alone does not establish that pairing, orchestration, or a full flow passed.

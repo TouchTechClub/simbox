@@ -67,7 +67,7 @@ beforeAll(async () => {
     async fetch(request) {
       const url = new URL(request.url);
       // A run's tunnel answers only while that run is active.
-      const health = url.pathname.match(/^\/(ios|android)\/agent-device\/health$/);
+      const health = url.pathname.match(/^\/(ios|android)\/v1\/agent-device\/health$/);
       if (health)
         return active.some((r) => r.platform === health[1] && r.state === "live")
           ? Response.json({ ok: true, upstream: { ok: true } })
@@ -145,6 +145,10 @@ async function simbox(...args: string[]) {
     NO_COLOR: "1",
   };
   delete env.T3CODE_HOME;
+  // One shared caller: the session is the run's own, with no agent suffix.
+  delete env.SIMBOX_HOLDER;
+  delete env.T3CODE_THREAD_ID;
+  delete env.CLAUDE_CODE_SESSION_ID;
   delete env.SIMBOX_DEVICE_REGISTRATION_DIR;
   const child = Bun.spawn([process.execPath, cli, ...args], {
     env,
@@ -176,8 +180,9 @@ test("sim validates device flags locally, follows its own run and caches it per 
     body: { new: false, platform: "android", device: { model: "pixel_8", os: "35" } },
   });
   expect(sim.stdout).toContain("Android run android-run is live");
-  expect(sim.stdout).toContain('--platform android --device "Pixel 8"');
-  expect(sim.stdout).toContain("--serial emulator-5554");
+  expect(sim.stdout).toContain("Warm: Pixel 8 (API 35)");
+  expect(sim.stdout).toContain("simbox exec open <app> --platform android");
+  expect(sim.stdout).toContain("--session simbox-android-run");
   expect(sim.stdout).not.toContain("--platform ios");
   expect(JSON.parse(readFileSync(cacheFile("android"), "utf8"))).toMatchObject({
     platform: "android",
@@ -283,13 +288,13 @@ test("exec routes by --platform or the only active run, never across platforms",
   expect((await simbox("exec", "snapshot", "--platform=android")).code).toBe(0);
   let last = routed();
   expect(last.token).toBe("android-token");
-  expect(last.args).toContain(`${base()}/android/agent-device`);
+  expect(last.args).toContain(`${base()}/android/v1/agent-device`);
   expect(last.args).toContain("simbox-android-run");
 
   expect((await simbox("exec", "open", "app", "--platform", "ios")).code).toBe(0);
   last = routed();
   expect(last.token).toBe("ios-token");
-  expect(last.args).toContain(`${base()}/ios/agent-device`);
+  expect(last.args).toContain(`${base()}/ios/v1/agent-device`);
 
   // Both platforms are cached now; without a flag it is still ambiguous.
   expect((await simbox("exec", "snapshot")).stderr).toContain("iOS and Android runs are active");

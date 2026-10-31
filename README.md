@@ -55,6 +55,14 @@ after a transport failure: inspect with `simbox exec session list` first. Only
 read-only or absolute commands (`devices`, `snapshot`, `screenshot`, `fold`,
 `session`, `appstate`, `apps`, `get`, `is`) are retried, up to twice, when the
 tunnel drops.
+
+Each command renews the session's lease. agent-device fixes that lease at five
+minutes, so a session idle for longer loses its device, and Simlock wipes it.
+`agent-device devices` is not available through Simlock; `simbox devices list`
+shows what a runner offers. To use plain `agent-device`, save the run's profile
+from the dashboard (or `simbox sim`'s output) and run
+`agent-device connect --remote-config <file> --session <name>` once; Simlock
+refuses the `--daemon-base-url` and token flags on their own.
 Simlock leases, wipes and streams the devices. The run goes live only after
 its device is warm and a full `open`/`snapshot`/`close` through Simlock has
 passed; on iOS that also builds agent-device's XCTest runner, which adds a few

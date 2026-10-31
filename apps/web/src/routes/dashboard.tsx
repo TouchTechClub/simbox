@@ -47,6 +47,7 @@ import { cn } from "@/lib/utils";
 import { appRoute } from "./app";
 import type { PublicRun } from "@simbox/shared/types";
 import { formatRunner } from "@simbox/shared/runners";
+import { remoteProfile } from "@simbox/shared/remote-profile";
 import { DevicePreviewPanel } from "@/components/device-preview";
 
 const STARTING_STATES = new Set(["dispatching", "queued", "booting", "closing"]);
@@ -419,9 +420,18 @@ function RunCard({ run, onPreview }: { run: PublicRun; onPreview?: () => void })
   });
 
   const isLive = run.state === "live";
+  // Simlock only admits agent-device sessions opened from a profile file.
+  const profileFile = `simbox-${run.id.slice(0, 8)}.json`;
+  const profileJson = (token: string) =>
+    JSON.stringify(
+      remoteProfile({ runId: run.id, tunnelUrl: run.tunnelUrl ?? "", daemonToken: token }),
+      null,
+      2,
+    );
+  const connectLine = `agent-device connect --remote-config ${profileFile} --session simbox-${run.id}`;
 
   const copyConnect = async () => {
-    const cmd = `export AGENT_DEVICE_DAEMON_AUTH_TOKEN=${run.daemonToken ?? ""}\nagent-device connect proxy --daemon-base-url ${run.tunnelUrl ?? ""}/v1/agent-device --session simbox-${run.id}`;
+    const cmd = `(umask 077; cat > ${profileFile}) <<'EOF'\n${profileJson(run.daemonToken ?? "")}\nEOF\n${connectLine}`;
     try {
       await navigator.clipboard.writeText(cmd);
       setCopied(true);
@@ -486,16 +496,20 @@ function RunCard({ run, onPreview }: { run: PublicRun; onPreview?: () => void })
         {isLive && run.tunnelUrl ? (
           <div className="flex flex-col gap-3">
             <Terminal title="connect from your machine">
-              <TermLine comment># exports + proxy connect</TermLine>
-              <TermLine>
-                <span className="text-zinc-500">export</span> AGENT_DEVICE_DAEMON_AUTH_TOKEN=
-                <span className="text-amber-400">
-                  {revealToken ? (run.daemonToken ?? "") : "••••••••••••••••"}
-                </span>
+              <TermLine comment>
+                # save the run&apos;s profile (it holds the token), then connect
               </TermLine>
               <TermLine>
-                <span className="text-zinc-500">agent-device</span> connect proxy --daemon-base-url{" "}
-                {run.tunnelUrl}/v1/agent-device --session simbox-{run.id}
+                <span className="text-zinc-500">(umask 077; cat &gt; {profileFile})</span>{" "}
+                &lt;&lt;&apos;EOF&apos;
+              </TermLine>
+              <TermLine className="text-amber-400">
+                {profileJson(revealToken ? (run.daemonToken ?? "") : "••••••••••••••••")}
+              </TermLine>
+              <TermLine>EOF</TermLine>
+              <TermLine>{connectLine}</TermLine>
+              <TermLine comment>
+                # a lease idle for 5 minutes expires and its device is wiped
               </TermLine>
             </Terminal>
             <div className="flex gap-2">

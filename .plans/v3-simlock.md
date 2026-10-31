@@ -108,9 +108,9 @@ device hub, our own device boot and recovery, the quick-tunnel fallback and the 
 
 - `simbox sim` is unchanged in shape: ensure, wait for live and a ready device, probe
   `GET <tunnel>/v1/agent-device/health` with the token, write the cache, then print or run the
-  connect command: `agent-device connect proxy --daemon-base-url <tunnel>/v1/agent-device
---session simbox-<run>` with `AGENT_DEVICE_DAEMON_AUTH_TOKEN`.
-- `simbox exec` stays (the skill and S5 use it) but only adds the remote flags. Its retry and
+  connect command: `agent-device connect --remote-config <profile> --session simbox-<run>`, where
+  the profile is Simlock's own format (`leaseProvider: proxy`, tenant isolation) for the run.
+- `simbox exec` stays (the skill and S5 use it) but only adds `--remote-config` with that profile. Its retry and
   caching are unchanged.
 - Every request sends a real `User-Agent` (Cloudflare's Browser Integrity Check blocks some).
 
@@ -314,9 +314,16 @@ com.apple.Preferences`, then `snapshot`), not just boot the device.
   Integrity Check on odd User-Agents.
 - **Second and later devices on a run boot cold** (Simlock boots them on lease). The first
   agent-device `open` for them can take over 100s on iOS; agent-device retries `open`.
-- **Unverified until the first end-to-end run** (code assumes them; check in the run logs):
-  Simlock accepts our catalog's iOS model names and OS versions in a warm target; Android
-  avdmanager ids (`pixel_8`, `7.6in Foldable`) work as model aliases; `simbox exec`'s per-command
-  `--daemon-base-url <tunnel>/v1/agent-device` works against Simlock's front; the
-  `/v1/agent-device/health` body; whether Simlock's iOS stream is already rotated for landscape
-  (the panel still applies its own rotation); `install` before the first `open`.
+- **First end-to-end run (2026-10-31, hosted runners, local API).** Confirmed: iOS warm target
+  `iPhone 17e` / 26.5 and Android `pixel_8` / API 35; the stream and input proxies (tap, Home,
+  read-only close 1008). Found and fixed: Simlock refuses per-command `--daemon-base-url`/token
+  flags (tenant isolation needs a run and lease id), so `exec` passes a per-run profile with
+  `--remote-config`; an agent token gets 403 on `/v1/devices`, so preview names leases from the
+  run's booted device; the first iOS `snapshot` on a fresh lease took 164s, past `snapshot`'s 90s
+  default client budget, so the self-test passes `--timeout`.
+- **Lease TTL is fixed at 5 minutes** by agent-device's proxy lease client (0.21.35); each command
+  renews it. An idle session loses its device and Simlock wipes it. Raise upstream.
+- **`agent-device devices` is refused by Simlock's front**; `simbox devices list` covers it.
+- **Still unverified:** the foldable alias (`7.6in Foldable`); whether Simlock's iOS stream is
+  already rotated for landscape (the panel still applies its own rotation); `install` before the
+  first `open`.

@@ -7,8 +7,8 @@ description: Start and control remote iOS simulators or Android emulators on Git
 
 Simbox manages runners and credentials; each run is a Simlock daemon that
 leases its devices, and `agent-device` drives them. Use
-`simbox exec <agent-device arguments>` so auth/tunnel routing refreshes before
-each command. Do not write global agent-device profiles or expose run JSON tokens.
+`simbox exec <agent-device arguments>`; it handles auth and routing. Do not
+write global agent-device profiles or expose tokens.
 
 ## Setup
 
@@ -37,8 +37,7 @@ fit one device at a time: close devices when done, or use `sim --new` for
 another run. Runner priority is explicit `--runner` →
 repository override → account default → GitHub default; device model and OS
 defaults layer the same way, field by field. Custom labels can be a JSON array.
-Blacksmith needs its GitHub App and bills separately; do not silently select a
-paid runner. `--os` takes `18.4`, `18`, an API level, `latest` or `oldest`.
+Blacksmith bills separately; never silently select a paid runner. `--os` takes `18.4`, `18`, an API level, `latest` or `oldest`.
 `invalid_device` lists what the runner offers. A workflow-input or `workflow_needs_repair`
 error requires `simbox repair`, and possibly merging its PR.
 
@@ -81,10 +80,10 @@ simbox exec close --platform android       # release; Simlock wipes the device
 ```
 
 For iOS, open `com.apple.Preferences` first and install the simulator `.app`
-build, not a device IPA.
+build, not a device IPA. A lease idle for 5 minutes expires and its device is
+wiped. `exec devices` is unsupported; use `simbox devices list`.
 Check `agent-device help <command>` when unsure. Take a fresh snapshot after
-navigation; old refs may be invalid. Screenshots are visual evidence, not
-proof of backend behavior.
+navigation; old refs may be invalid.
 
 ## Recovery and cleanup
 

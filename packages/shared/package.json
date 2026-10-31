@@ -10,7 +10,8 @@
     "./preview": "./src/preview.ts",
     "./device-profile": "./src/device-profile.ts",
     "./device-catalog": "./src/device-catalog.ts",
-    "./workflow": "./src/workflow.ts"
+    "./workflow": "./src/workflow.ts",
+    "./remote-profile": "./src/remote-profile.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

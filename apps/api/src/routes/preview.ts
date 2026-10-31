@@ -73,11 +73,11 @@ async function simlockJson(run: RunRow, path: string, signal?: AbortSignal): Pro
 }
 /** The run's leased devices; a lease is what can be streamed. */
 async function inventory(run: RunRow, signal?: AbortSignal): Promise<PreviewInventory> {
-  const [leases, devices] = await Promise.all([
-    simlockJson(run, "leases", signal),
-    simlockJson(run, "devices", signal).catch(() => null),
-  ]);
-  return leaseInventory(leases, devices, run.platform);
+  const booted = run.booted_device;
+  return leaseInventory(await simlockJson(run, "leases", signal), run.platform, {
+    name: booted?.model,
+    version: booted?.os,
+  });
 }
 
 previewRoutes.get("/v1/runs/:id/preview/devices", requireUser, async (c) => {

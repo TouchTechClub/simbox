@@ -219,9 +219,9 @@ export function agentDeviceProfile(home = Bun.env.HOME || homedir()): string {
 
 /**
  * Open, inspect and release one device through the local daemon before the
- * run goes live. On iOS this builds the XCTest runner (about 40s on a hosted
- * Mac), which would otherwise land on a client's first `snapshot` and outlast
- * agent-device's 90s client timeout.
+ * run goes live. On iOS this builds the XCTest runner; the first snapshot on a
+ * fresh lease then took 164s on a hosted Mac, past `snapshot`'s 90s default
+ * client budget, so it passes `--timeout` (which sets that budget).
  */
 export async function selfTest(agentDevice: string, platform: DevicePlatform): Promise<void> {
   const session = ["--session", "simbox-warmup"];
@@ -240,7 +240,7 @@ export async function selfTest(agentDevice: string, platform: DevicePlatform): P
         : ["open", "--platform", "android"],
       300_000,
     );
-    await step("snapshot", ["snapshot"], 300_000);
+    await step("snapshot", ["snapshot", "--timeout", "270000"], 300_000);
   } finally {
     await step("close", ["close"], 120_000).catch((err) => warn(String(err)));
   }

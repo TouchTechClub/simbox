@@ -36,39 +36,28 @@ export function validPreviewDevice(id: unknown): id is string {
 
 interface SimlockLease {
   id?: unknown;
-  deviceId?: unknown;
-}
-interface SimlockDevice {
-  id?: unknown;
-  spec?: { platform?: unknown; model?: unknown; osVersion?: unknown; physical?: unknown };
 }
 
 /**
- * The run's viewable devices: its Simlock leases (`GET /v1/leases`), named
- * from `GET /v1/devices` when that answers. Ids are lease ids, never paths.
+ * The run's viewable devices: its Simlock leases (`GET /v1/leases`). Ids are
+ * lease ids, never paths. An agent token cannot list Simlock's devices, and a
+ * run warms one target, so every lease is named after the run's device.
  */
 export function leaseInventory(
   rawLeases: unknown,
-  rawDevices: unknown,
   platform: DevicePlatform,
+  device?: { name?: string | null; version?: string | null } | null,
 ): PreviewInventory {
   const leases = (rawLeases as { leases?: unknown } | null)?.leases;
   if (!Array.isArray(leases)) throw new Error("Invalid Simlock lease list");
-  const listed = (rawDevices as { devices?: unknown } | null)?.devices;
-  const known = new Map<string, SimlockDevice>();
-  if (Array.isArray(listed))
-    for (const device of listed as SimlockDevice[])
-      if (device && typeof device.id === "string") known.set(device.id, device);
   const devices: PreviewDevice[] = [];
   for (const lease of leases.slice(0, 100) as SimlockLease[]) {
     if (!lease || !validPreviewDevice(lease.id)) continue;
-    if (devices.some((device) => device.id === lease.id)) continue;
-    const spec = typeof lease.deviceId === "string" ? known.get(lease.deviceId)?.spec : undefined;
-    if (spec?.physical === true || (spec?.platform && spec.platform !== platform)) continue;
+    if (devices.some((known) => known.id === lease.id)) continue;
     devices.push({
       id: lease.id,
-      name: typeof spec?.model === "string" ? spec.model.slice(0, 150) : "Leased device",
-      version: typeof spec?.osVersion === "string" ? spec.osVersion.slice(0, 80) : "",
+      name: (device?.name || "Leased device").slice(0, 150),
+      version: (device?.version || "").slice(0, 80),
       platform,
     });
   }

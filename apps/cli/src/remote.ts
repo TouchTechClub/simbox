@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { CliError } from "./client.js";
 import { configDir } from "./config.js";
-import { daemonBaseUrl, findAgentDevice, sessionName } from "./connect.js";
+import { findAgentDevice, sessionName, writeRemoteProfile } from "./connect.js";
 import { holderId } from "./holder.js";
 import type { ConnectInfo } from "./connect.js";
 import { sleep } from "./util.js";
@@ -16,6 +16,7 @@ export function remoteArgs(
   args: string[],
   info: ConnectInfo,
   stateDir: string,
+  profile: string,
   holder = holderId(),
 ): string[] {
   // Isolate from saved agent-device proxy profiles: those may hold a stale URL
@@ -28,14 +29,8 @@ export function remoteArgs(
     result.push("--timeout", String(STARTUP_TIMEOUT_MS));
   }
   if (!hasFlag(args, "--session")) result.push("--session", sessionName(info.runId, holder));
-  result.push(
-    "--state-dir",
-    stateDir,
-    "--daemon-base-url",
-    daemonBaseUrl(info.tunnelUrl),
-    "--daemon-transport",
-    "http",
-  );
+  // The profile carries the URL, token and tenant scope Simlock requires.
+  result.push("--state-dir", stateDir, "--remote-config", profile);
   return [...result, ...tail];
 }
 
@@ -83,6 +78,10 @@ export async function cmdExec(args: string[]): Promise<void> {
     "--daemon-transport",
     "--remote-config",
     "--state-dir",
+    "--tenant",
+    "--run-id",
+    "--lease-id",
+    "--session-isolation",
   ];
   if (reserved.some((flag) => hasFlag(args, flag))) {
     throw new CliError(
@@ -143,16 +142,15 @@ async function runRemote(
   info: ConnectInfo,
   capture: boolean,
 ): Promise<{ code: number; output: string; stdout: string; stderr: string }> {
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    AGENT_DEVICE_DAEMON_AUTH_TOKEN: info.daemonToken,
-  };
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  delete env.AGENT_DEVICE_DAEMON_AUTH_TOKEN;
   delete env.AGENT_DEVICE_REMOTE_CONFIG;
   delete env.AGENT_DEVICE_DAEMON_BASE_URL;
   let stdout = "";
   let stderr = "";
   const code = await new Promise<number>((resolve, reject) => {
-    const child = spawn(bin, remoteArgs(args, info, join(configDir(), "agent-device")), {
+    const profile = writeRemoteProfile(info);
+    const child = spawn(bin, remoteArgs(args, info, join(configDir(), "agent-device"), profile), {
       stdio: capture ? ["inherit", "pipe", "pipe"] : "inherit",
       env,
     });

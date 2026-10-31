@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync, statSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { DevicePlatform, PublicRun, RunSummary } from "../packages/shared/src/index.js";
-import { sessionName, type ConnectInfo } from "../apps/cli/src/connect.js";
+import { sessionName, writeRemoteProfile, type ConnectInfo } from "../apps/cli/src/connect.js";
 import { remoteArgs, shouldReplay } from "../apps/cli/src/remote.js";
 import {
   connect,
@@ -333,36 +337,61 @@ describe("API client", () => {
 });
 
 describe("remote commands", () => {
-  test("startup timeout and session are stable across tunnel URLs", () => {
+  test("startup timeout, session and profile are stable across tunnel URLs", () => {
     const oldArgs = remoteArgs(
       ["open", "com.apple.Preferences", "--device", "iPhone"],
       info,
       "/state",
+      "/profiles/run-1.json",
       undefined,
     );
     const nextArgs = remoteArgs(
       ["open", "com.apple.Preferences", "--device", "iPhone"],
       { ...info, tunnelUrl: "https://new.example" },
       "/state",
+      "/profiles/run-1.json",
       undefined,
     );
     expect(oldArgs).toContain("300000");
     expect(oldArgs).toContain("simbox-run-1");
-    expect(nextArgs.slice(0, -3)).toEqual(oldArgs.slice(0, -3));
-    // Simlock serves agent-device under its versioned API.
-    expect(nextArgs.at(-3)).toBe("https://new.example/v1/agent-device");
+    expect(nextArgs).toEqual(oldArgs);
+    expect(oldArgs.slice(-4)).toEqual([
+      "--state-dir",
+      "/state",
+      "--remote-config",
+      "/profiles/run-1.json",
+    ]);
     expect(oldArgs.join(" ")).not.toContain("secret");
   });
+  test("the run's profile is Simlock's tenant-scoped proxy profile, readable only by its owner", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "simbox-profile-"));
+    try {
+      const path = writeRemoteProfile({ ...info, tunnelUrl: "https://r-1.example/" }, dir);
+      expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
+        clientId: "51b0c51b0c51b0c5",
+        daemonAuthToken: info.daemonToken,
+        daemonBaseUrl: "https://r-1.example/v1/agent-device",
+        daemonTransport: "http",
+        leaseProvider: "proxy",
+        runId: "run-1",
+        sessionIsolation: "tenant",
+        tenant: "simbox",
+      });
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   test("agents sharing a run get their own session, so their own Simlock lease", () => {
-    const a = remoteArgs(["snapshot"], info, "/state", "aaaaaaaa1111");
-    const b = remoteArgs(["snapshot"], info, "/state", "bbbbbbbb2222");
+    const a = remoteArgs(["snapshot"], info, "/state", "/p.json", "aaaaaaaa1111");
+    const b = remoteArgs(["snapshot"], info, "/state", "/p.json", "bbbbbbbb2222");
     expect(a).toContain("simbox-run-1-aaaaaaaa");
     expect(b).toContain("simbox-run-1-bbbbbbbb");
     expect(sessionName("run-1")).toBe("simbox-run-1");
   });
   test("routing flags are inserted before a positional separator", () => {
-    const args = remoteArgs(["open", "--", "--some-app"], info, "/state");
-    expect(args.indexOf("--daemon-base-url")).toBeLessThan(args.indexOf("--"));
+    const args = remoteArgs(["open", "--", "--some-app"], info, "/state", "/p.json");
+    expect(args.indexOf("--remote-config")).toBeLessThan(args.indexOf("--"));
     expect(args.at(-1)).toBe("--some-app");
   });
   test("explicit timeout/session respected; taps are not assigned startup budgets", () => {
@@ -370,11 +399,12 @@ describe("remote commands", () => {
       ["open", "app", "--timeout", "420000", "--session=other"],
       info,
       "/state",
+      "/p.json",
     );
     expect(args.filter((arg) => arg === "--timeout")).toHaveLength(1);
     expect(args).not.toContain("300000");
     expect(args).not.toContain("simbox-run-1");
-    expect(remoteArgs(["press", "@e1"], info, "/state")).not.toContain("--timeout");
+    expect(remoteArgs(["press", "@e1"], info, "/state", "/p.json")).not.toContain("--timeout");
   });
   test("readiness waits for the newly registered tunnel without replaying commands", async () => {
     const probes: string[] = [];

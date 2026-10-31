@@ -19,36 +19,23 @@ import {
   bridgePreviewSockets,
 } from "../apps/api/src/preview-ticket";
 
-test("preview inventory is the run's Simlock leases, named from its devices", () => {
+test("preview inventory is the run's Simlock leases, named after the run's device", () => {
   const lease = { id: "lse_1", deviceId: "dev_1" };
   const inventory = leaseInventory(
-    {
-      leases: [
-        lease,
-        lease,
-        { id: "lse_2", deviceId: "dev_unknown" },
-        { id: "lse_3", deviceId: "dev_physical" },
-        { id: "lse_4", deviceId: "dev_ios" },
-        { id: "../../exec", deviceId: "dev_1" },
-      ],
-    },
-    {
-      devices: [
-        { id: "dev_1", spec: { platform: "android", model: "Pixel 8", osVersion: "35" } },
-        { id: "dev_physical", spec: { platform: "android", model: "Pixel", physical: true } },
-        { id: "dev_ios", spec: { platform: "ios", model: "iPhone 17", osVersion: "26.5" } },
-      ],
-    },
+    { leases: [lease, lease, { id: "lse_2" }, { id: "../../exec" }, null] },
     "android",
+    { name: "Pixel 8", version: "35" },
   );
   expect(inventory.devices).toEqual([
     { id: "lse_1", name: "Pixel 8", platform: "android", version: "35" },
-    { id: "lse_2", name: "Leased device", platform: "android", version: "" },
+    { id: "lse_2", name: "Pixel 8", platform: "android", version: "35" },
   ]);
   expect(inventory.observedAt).toBeGreaterThan(0);
-  // Without the device list, leases are still viewable.
-  expect(leaseInventory({ leases: [lease] }, null, "ios").devices).toHaveLength(1);
-  expect(() => leaseInventory({}, null, "ios")).toThrow();
+  // Before the run reports its device, leases are still viewable.
+  expect(leaseInventory({ leases: [lease] }, "ios", null).devices).toEqual([
+    { id: "lse_1", name: "Leased device", platform: "ios", version: "" },
+  ]);
+  expect(() => leaseInventory({}, "ios")).toThrow();
   for (const value of ["../a", "a/b", "?device=x", "$(id)", "a%2Fexec", "", "x".repeat(129)])
     expect(validPreviewDevice(value)).toBe(false);
 });

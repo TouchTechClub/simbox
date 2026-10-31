@@ -1,6 +1,10 @@
 import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import pc from "picocolors";
+import { agentDeviceBaseUrl, remoteProfile } from "@simbox/shared";
 import type { BootedDevice, DevicePlatform } from "@simbox/shared";
+import { configDir } from "./config.js";
 import { holderId } from "./holder.js";
 
 export interface ConnectInfo {
@@ -10,9 +14,19 @@ export interface ConnectInfo {
   expiresAt: number | null;
 }
 
-/** The run's Simlock daemon serves agent-device here. */
-export function daemonBaseUrl(tunnelUrl: string): string {
-  return `${tunnelUrl.replace(/\/+$/, "")}/v1/agent-device`;
+export const daemonBaseUrl = agentDeviceBaseUrl;
+
+/**
+ * Write the run's agent-device profile (owner-only: it holds the run's token)
+ * and return its path. Rewritten before each use, since a restarted tunnel
+ * changes the URL.
+ */
+export function writeRemoteProfile(info: ConnectInfo, dir = join(configDir(), "profiles")): string {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const path = join(dir, `${info.runId}.json`);
+  writeFileSync(path, `${JSON.stringify(remoteProfile(info), null, 2)}\n`, { mode: 0o600 });
+  chmodSync(path, 0o600);
+  return path;
 }
 
 /**
@@ -51,7 +65,6 @@ export function connectFlow(
   holder = holderId(),
 ): void {
   const out = quiet ? process.stderr : process.stdout;
-  const base = daemonBaseUrl(info.tunnelUrl);
   const bin = findAgentDevice();
   const { platform, bootedDevice } = hints;
   const session = sessionName(info.runId, holder);
@@ -78,10 +91,12 @@ export function connectFlow(
     `  This run (${info.runId}) is reserved for this agent; other agents get their own. SIMBOX_RUN=${info.runId} pins a shell to it.\n`,
   );
   out.write("  exec supplies auth and allows 5 minutes for a cold boot.\n\n");
-  out.write(pc.dim("  manual connect:\n"));
-  out.write(`  ${pc.cyan(`export AGENT_DEVICE_DAEMON_AUTH_TOKEN=${info.daemonToken}`)}\n`);
   out.write(
-    `  ${pc.cyan(`agent-device connect proxy --daemon-base-url ${base} --session ${session}`)}\n`,
+    `  Send a command at least every 5 minutes while you need the device: an idle lease expires and Simlock erases the device.\n\n`,
+  );
+  out.write(pc.dim("  manual connect (the profile holds the run's token):\n"));
+  out.write(
+    `  ${pc.cyan(`agent-device connect --remote-config ${writeRemoteProfile(info)} --session ${session}`)}\n`,
   );
   out.write(
     `  ${pc.cyan(`agent-device open <app> --platform ${platform} --session ${session} --timeout 300000`)}\n`,

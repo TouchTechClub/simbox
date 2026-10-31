@@ -120,7 +120,11 @@ beforeAll(async () => {
   // agent-device stand-in: records where Simbox routed the command.
   writeFileSync(
     join(dir, "bin/agent-device"),
-    `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(process.env.EXEC_LOG, JSON.stringify({args: process.argv.slice(2), token: process.env.AGENT_DEVICE_DAEMON_AUTH_TOKEN}) + "\\n");\n`,
+    `#!/usr/bin/env node
+const fs = require('node:fs'); const args = process.argv.slice(2);
+const profile = JSON.parse(fs.readFileSync(args[args.indexOf('--remote-config') + 1], 'utf8'));
+fs.appendFileSync(process.env.EXEC_LOG, JSON.stringify({args, token: profile.daemonAuthToken, base: profile.daemonBaseUrl, env: process.env.AGENT_DEVICE_DAEMON_AUTH_TOKEN ?? null}) + "\\n");
+`,
   );
   await chmod(join(dir, "bin/agent-device"), 0o755);
 });
@@ -279,7 +283,10 @@ test("exec routes by --platform or the only active run, never across platforms",
     readFileSync(execLog(), "utf8")
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line) as { args: string[]; token: string })
+      .map(
+        (line) =>
+          JSON.parse(line) as { args: string[]; token: string; base: string; env: string | null },
+      )
       .at(-1)!;
   const ambiguous = await simbox("exec", "snapshot");
   expect(ambiguous.code).toBe(1);
@@ -288,13 +295,14 @@ test("exec routes by --platform or the only active run, never across platforms",
   expect((await simbox("exec", "snapshot", "--platform=android")).code).toBe(0);
   let last = routed();
   expect(last.token).toBe("android-token");
-  expect(last.args).toContain(`${base()}/android/v1/agent-device`);
+  expect(last.base).toBe(`${base()}/android/v1/agent-device`);
+  expect(last.env).toBeNull();
   expect(last.args).toContain("simbox-android-run");
 
   expect((await simbox("exec", "open", "app", "--platform", "ios")).code).toBe(0);
   last = routed();
   expect(last.token).toBe("ios-token");
-  expect(last.args).toContain(`${base()}/ios/v1/agent-device`);
+  expect(last.base).toBe(`${base()}/ios/v1/agent-device`);
 
   // Both platforms are cached now; without a flag it is still ambiguous.
   expect((await simbox("exec", "snapshot")).stderr).toContain("iOS and Android runs are active");

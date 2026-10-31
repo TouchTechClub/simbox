@@ -56,6 +56,7 @@ test("preview API owns every target, hides credentials, rejects origins and inva
       tunnel_url: "https://r-preview.tunnel.test",
       tunnel_hostname: "r-preview.tunnel.test",
       daemon_token: "must-stay-private",
+      booted_device: { model: "Pixel 8", os: "35", name: "Pixel 8" },
     });
     await db.insert(schema.runs).values({
       id: "ios",
@@ -74,19 +75,6 @@ test("preview API owns every target, hides credentials, rejects origins and inva
       const lease = iosInventory ? "lse_ios" : "lse_android";
       if (url.endsWith("/v1/leases"))
         return Response.json({ leases: [{ id: lease, deviceId: "dev_1" }] });
-      if (url.endsWith("/v1/devices"))
-        return Response.json({
-          devices: [
-            {
-              id: "dev_1",
-              spec: {
-                platform: iosInventory ? "ios" : "android",
-                model: "Pixel 8",
-                osVersion: "35",
-              },
-            },
-          ],
-        });
       if (url.endsWith("/stream"))
         return new Response(new Uint8Array([0, 0, 0, 2, 4, 1]), {
           headers: { "content-type": "application/vnd.simlock.stream+h264" },

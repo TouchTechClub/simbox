@@ -1,7 +1,8 @@
 /**
  * One run prepares one platform. Each platform adapter lists what its runner
- * can boot and boots the device a run asked for, using the shared picker so
- * the API, CLI and runner agree on what a request means.
+ * can boot, validates the device a run asked for with the shared picker (so
+ * the API, CLI and runner agree on what a request means) and prepares the
+ * host for it. Simlock then creates and boots the device itself.
  */
 import { pickDevice } from "@simbox/shared";
 import type {
@@ -17,8 +18,6 @@ import type {
 export interface DeviceChoice {
   model: CatalogModel;
   os: CatalogOs;
-  /** iOS: the simulator created or reused for this run. */
-  udid?: string;
   /** The full catalog, when choosing needed it (saves listing it again). */
   catalog?: DeviceCatalog;
 }
@@ -28,13 +27,20 @@ export interface PlatformAdapter {
   /** Everything this runner can boot. Android lists the SDK repository (slow). */
   catalog(): Promise<DeviceCatalog>;
   /**
-   * Choose the device and prepare the host for it. Runs before the device
-   * daemon starts (iOS switches Xcode here). Throws DeviceRequestError when
-   * the runner cannot provide what was asked for.
+   * Choose the device. Runs before Simlock starts (iOS switches Xcode here,
+   * since Simlock resolves its toolchain once). Throws DeviceRequestError
+   * when the runner cannot provide what was asked for.
    */
   select(selector: DeviceProfile | null): Promise<DeviceChoice>;
-  /** Boot the chosen device until it accepts commands. */
-  boot(choice: DeviceChoice): Promise<BootedDevice>;
+  /** Install what Simlock needs to boot the choice (Android: SDK packages). */
+  prepare(choice: DeviceChoice): Promise<void>;
+  /** The Simlock warm-pool model for the choice. */
+  simlockModel(choice: DeviceChoice): string;
+}
+
+/** What the run reports as booted, from the choice Simlock keeps warm. */
+export function bootedFromChoice(choice: DeviceChoice): BootedDevice {
+  return { model: choice.model.name, os: choice.os.version, name: choice.model.name };
 }
 
 /** A requested device or OS this runner cannot provide; the run must fail. */

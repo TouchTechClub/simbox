@@ -28,14 +28,43 @@ async function loadStream() {
   return { startDeviceStream, directory };
 }
 
-test("Android session setup preserves frames during codec checks without a reset feedback loop", async () => {
+/** One Simlock stream frame: `[u32 length][u8 tag][payload]`, length counting the tag. */
+function frame(tag: number, payload: number[]): number[] {
+  const length = payload.length + 1;
+  return [
+    length >>> 24,
+    (length >>> 16) & 255,
+    (length >>> 8) & 255,
+    length & 255,
+    tag,
+    ...payload,
+  ];
+}
+
+const NAMES = ["window", "VideoDecoder", "EncodedVideoChunk", "WebSocket", "fetch"] as const;
+
+/** Browser globals for one stream; `body` is the lease's stream response. */
+async function withStream(
+  platform: "ios" | "android",
+  body: number[],
+  run: (state: {
+    decoded: any[];
+    sent: string[];
+    states: string[];
+    fetches: string[];
+    socket: any;
+  }) => Promise<void>,
+) {
   const { startDeviceStream, directory } = await loadStream();
-  const names = ["window", "VideoDecoder", "EncodedVideoChunk", "WebSocket"] as const;
   const globals = globalThis as Record<string, any>;
-  const originals = names.map((name) => Object.getOwnPropertyDescriptor(globalThis, name));
-  const sent: string[] = [];
-  const decoded: any[] = [];
-  let socket: any;
+  const originals = NAMES.map((name) => Object.getOwnPropertyDescriptor(globalThis, name));
+  const state = {
+    decoded: [] as any[],
+    sent: [] as string[],
+    states: [] as string[],
+    fetches: [] as string[],
+    socket: undefined as any,
+  };
   let stream: ReturnType<typeof startDeviceStream> | undefined;
   try {
     globals.window = { location: { href: "http://localhost/" } };
@@ -49,8 +78,8 @@ test("Android session setup preserves frames during codec checks without a reset
       configure() {
         this.state = "configured";
       }
-      decode(frame: unknown) {
-        decoded.push(frame);
+      decode(chunk: unknown) {
+        state.decoded.push(chunk);
       }
       close() {
         this.state = "closed";
@@ -66,150 +95,75 @@ test("Android session setup preserves frames during codec checks without a reset
       readyState = 1;
       bufferedAmount = 0;
       constructor() {
-        // Capture the test socket to inject actual hub event ordering.
         // oxlint-disable-next-line typescript/no-this-alias
-        socket = this;
+        state.socket = this;
       }
       send(value: string) {
-        sent.push(value);
+        state.sent.push(value);
       }
       close() {
         this.readyState = 3;
       }
     };
-    stream = startDeviceStream({
-      runId: "test",
-      device: { id: "emulator-5554", name: "test", platform: "android" },
-      control: false,
-      canvas: { getContext: () => ({}) },
-      status() {},
-      input() {},
-      frame() {},
-    });
-    await Bun.sleep(1);
-    socket.onmessage({ data: '{"type":"video-session"}' });
-    // An SPS + IDR followed immediately by a delta arrives before the
-    // asynchronous codec support check completes, as it does on real scrcpy.
-    socket.onmessage({
-      data: new Uint8Array([0, 0, 0, 1, 0x67, 0x42, 0, 0x1e, 0, 0, 0, 1, 0x65, 1]).buffer,
-    });
-    socket.onmessage({ data: new Uint8Array([0, 0, 0, 1, 0x41, 2]).buffer });
-    await Bun.sleep(40);
-    expect(decoded.map((frame) => frame.type)).toEqual(["key", "delta"]);
-    expect(sent).toEqual([]);
-  } finally {
-    stream?.stop();
-    await rm(directory, { recursive: true, force: true });
-    names.forEach((name, index) => {
-      const descriptor = originals[index];
-      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-      else delete globals[name];
-    });
-  }
-});
-
-test("iOS falls back to continuous MJPEG when AVCC stalls before headers and cancels on stop", async () => {
-  const { startDeviceStream, directory } = await loadStream();
-  const names = [
-    "window",
-    "VideoDecoder",
-    "EncodedVideoChunk",
-    "WebSocket",
-    "fetch",
-    "createImageBitmap",
-  ] as const;
-  const globals = globalThis as Record<string, any>;
-  const originals = names.map((name) => Object.getOwnPropertyDescriptor(globalThis, name));
-  let socket: any;
-  let stream: ReturnType<typeof startDeviceStream> | undefined;
-  let avccAborted = false;
-  let painted = 0;
-  let mjpegRequests = 0;
-  const states: string[] = [];
-  const sent: string[] = [];
-  try {
-    globals.window = { location: { href: "http://localhost/" } };
-    globals.VideoDecoder = class {};
-    globals.EncodedVideoChunk = class {};
-    globals.WebSocket = class {
-      static OPEN = 1;
-      readyState = 1;
-      bufferedAmount = 0;
-      constructor() {
-        // oxlint-disable-next-line typescript/no-this-alias
-        socket = this;
-      }
-      send(value: string) {
-        sent.push(value);
-      }
-      close() {
-        this.readyState = 3;
-      }
-    };
-    globals.createImageBitmap = async () => ({ width: 400, height: 800, close() {} });
-    globals.fetch = (url: string, init: RequestInit) => {
-      if (url.includes("/video?"))
-        return new Promise((_resolve, reject) => {
-          init.signal!.addEventListener(
-            "abort",
-            () => {
-              avccAborted = true;
-              reject(new Error("aborted"));
-            },
-            { once: true },
-          );
-        });
-      mjpegRequests++;
-      return Promise.resolve(
-        new Response(
-          new ReadableStream({
-            start(controller) {
-              controller.enqueue(new Uint8Array([255, 216, 255, 217]));
-            },
-          }),
-        ),
-      );
+    globals.fetch = async (url: string) => {
+      state.fetches.push(url);
+      return new Response(new Uint8Array(body));
     };
     stream = startDeviceStream({
       runId: "test",
-      device: { id: "ABCD-1234", name: "test", platform: "ios" },
+      device: { id: "lse_1", name: "test", platform },
       control: false,
-      iosStartMs: 20,
       canvas: {
         getContext: () => ({
           save() {},
           translate() {},
           rotate() {},
-          drawImage() {
-            painted++;
-          },
+          drawImage() {},
           restore() {},
         }),
       },
-      status(_state: string, detail: string) {
-        states.push(detail);
+      status(_status: string, detail: string) {
+        state.states.push(detail);
       },
       input() {},
       frame() {},
     });
     await Bun.sleep(1);
-    socket.onopen();
-    await Bun.sleep(60);
-    expect(avccAborted).toBe(true);
-    expect(mjpegRequests).toBe(2);
-    expect(painted).toBeGreaterThan(0);
-    expect(states).toContain("Live · MJPEG fallback");
-    stream.stop();
-    await Bun.sleep(40);
-    expect(mjpegRequests).toBe(2);
-    expect(sent).toEqual([]);
+    state.socket.onopen();
+    await run(state);
   } finally {
     stream?.stop();
     await rm(directory, { recursive: true, force: true });
-    names.forEach((name, index) => {
+    NAMES.forEach((name, index) => {
       const descriptor = originals[index];
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);
       else delete globals[name];
     });
   }
+}
+
+for (const platform of ["ios", "android"] as const)
+  test(`${platform} decodes the lease stream in order across the codec check`, async () => {
+    // A keyframe and a delta land in the same chunk as the avcC record,
+    // before the asynchronous codec support check resolves.
+    const body = [
+      ...frame(1, [1, 0x42, 0, 0x1e, 0xff]),
+      ...frame(2, [0, 0, 0, 1, 0x65]),
+      ...frame(3, [0, 0, 0, 1, 0x41]),
+    ];
+    await withStream(platform, body, async ({ decoded, sent, fetches }) => {
+      await Bun.sleep(60);
+      expect(decoded.map((chunk) => chunk.type)).toEqual(["key", "delta"]);
+      expect(fetches[0]).toBe("/v1/runs/test/preview/video?device=lse_1");
+      expect(sent).toEqual([]);
+    });
+  });
+
+test("an ended lease stops the preview instead of reconnecting", async () => {
+  await withStream("ios", frame(7, []), async ({ states, fetches }) => {
+    await Bun.sleep(60);
+    expect(states.at(-1)).toContain("lease ended");
+    await Bun.sleep(1100);
+    expect(fetches).toHaveLength(1);
+  });
 });

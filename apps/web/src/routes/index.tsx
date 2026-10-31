@@ -33,7 +33,7 @@ function AuthPanel() {
           <TermLine prompt>simbox sim</TermLine>
           <TermLine comment># dispatching → queued → booting → live (2m 41s)</TermLine>
           <TermLine>
-            tunnel <span className="text-zinc-500">https://…trycloudflare.com</span>
+            tunnel <span className="text-zinc-500">https://r-…</span>
           </TermLine>
           <TermLine prompt>agent-device open Safari --platform ios</TermLine>
           <TermLine>

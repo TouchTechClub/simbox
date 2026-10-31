@@ -1,6 +1,6 @@
 import type { DevicePlatform, PublicRun, RunSummary } from "@simbox/shared";
 import { PLATFORMS } from "@simbox/shared";
-import { activeRuns, CliError, runHistory } from "./client.js";
+import { activeRuns, CliError, runHistory, USER_AGENT } from "./client.js";
 import { daemonBaseUrl, type ConnectInfo } from "./connect.js";
 import { clearCachedRun, readCachedRun, writeCachedRun } from "./run-cache.js";
 import { sleep } from "./util.js";
@@ -225,11 +225,12 @@ export async function waitForRemote(
 export async function probeRemote(info: ConnectInfo): Promise<boolean> {
   try {
     const res = await fetch(`${daemonBaseUrl(info.tunnelUrl)}/health`, {
+      headers: { authorization: `Bearer ${info.daemonToken}`, "user-agent": USER_AGENT },
       signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) return false;
-    const body = (await res.json()) as { ok?: boolean; upstream?: { ok?: boolean } };
-    return body.ok === true && body.upstream?.ok !== false;
+    const body = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+    return body?.ok !== false;
   } catch {
     return false;
   }

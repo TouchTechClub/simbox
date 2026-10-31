@@ -1,28 +1,25 @@
 /**
- * Android on Linux/KVM: list the SDK's system images and hardware profiles,
- * install the chosen API's packages, create the `simbox` AVD and boot it
- * headlessly. Unlike iOS warmup, every failure here fails the run: an
- * Android run whose emulator never boots has nothing to serve.
+ * Android on Linux/KVM: list the SDK's system images and hardware profiles
+ * and install the chosen API's packages. Simlock creates the AVD and boots
+ * the emulator headlessly; it only warms targets whose image is installed.
  */
 import { existsSync } from "node:fs";
-import { mkdir, readdir, rm } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { compareVersions } from "@simbox/shared";
-import type { BootedDevice, CatalogModel, DeviceCatalog, DeviceProfile } from "@simbox/shared";
+import type { CatalogModel, DeviceCatalog, DeviceProfile } from "@simbox/shared";
 import { PINS } from "./pins.js";
 import { endGroup, info, relay, startGroup, warn } from "./log.js";
-import { childEnv, pumpLines, run, which } from "./proc.js";
-import type { ChildProc } from "./proc.js";
+import { run, which } from "./proc.js";
 import { pickOrThrow, type DeviceChoice, type PlatformAdapter } from "./platform.js";
 
-export const DEFAULT_ANDROID_MODEL = "pixel_6";
-/** The pinned system image's API level ("37.0"). */
+/** A Simlock built-in profile (alias of "Pixel 8"), verified on hosted runners. */
+export const DEFAULT_ANDROID_MODEL = "pixel_8";
+/** The pinned system image's API level ("35"). */
 export const DEFAULT_ANDROID_API = /;android-([\d.]+);/.exec(PINS.androidSystemImage)![1]!;
 /** Older images are not worth offering; installed ones are listed regardless. */
 const MIN_ANDROID_API = 28;
-const AVD_NAME = "simbox";
-const SERIAL = "emulator-5554";
 
 export function androidAbi(arch: string): string {
   return arch === "arm64" ? "arm64-v8a" : "x86_64";
@@ -176,16 +173,7 @@ async function installedApis(sdkRoot: string, arch: string): Promise<string[]> {
     );
 }
 
-export interface AndroidAdapter extends PlatformAdapter {
-  /** Boot the already-created AVD again after the emulator died. */
-  relaunch(): Promise<void>;
-}
-
-export function createAndroidAdapter(options: {
-  onEmulator: (proc: ChildProc) => void;
-  arch?: string;
-  bootTimeoutMs?: number;
-}): AndroidAdapter {
+export function createAndroidAdapter(options: { arch?: string } = {}): PlatformAdapter {
   const arch = options.arch ?? process.arch;
   let found: Promise<AndroidTools> | null = null;
   const tools = () => (found ??= findAndroidTools());
@@ -213,56 +201,6 @@ export function createAndroidAdapter(options: {
         `sdkmanager --list exited ${listed.code}: ${listed.stderr.trim().slice(-300)}`,
       );
     return buildAndroidCatalog([...parseSystemImageApis(listed.stdout, arch), ...local], models);
-  };
-
-  let avdPath = "";
-  const launch = async (): Promise<void> => {
-    const t = await tools();
-    info(`booting AVD '${AVD_NAME}' headlessly with software graphics`);
-    const emulator = Bun.spawn(
-      [
-        t.emulator,
-        "-avd",
-        AVD_NAME,
-        "-port",
-        "5554",
-        "-no-window",
-        "-no-audio",
-        "-no-boot-anim",
-        "-no-snapshot",
-        "-gpu",
-        "swiftshader_indirect",
-        "-feature",
-        "-Vulkan",
-        "-memory",
-        "2048",
-      ],
-      { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: childEnv() },
-    );
-    options.onEmulator(emulator);
-    pumpLines(emulator.stdout, "android-emulator");
-    pumpLines(emulator.stderr, "android-emulator");
-    const deadline = Date.now() + (options.bootTimeoutMs ?? 6 * 60_000);
-    let booted = false;
-    while (Date.now() < deadline && emulator.exitCode === null) {
-      const result = await run([t.adb, "-s", SERIAL, "shell", "getprop", "sys.boot_completed"], {
-        timeoutMs: 10_000,
-      });
-      if (result.code === 0 && result.stdout.trim() === "1") {
-        booted = true;
-        break;
-      }
-      await Bun.sleep(2000);
-    }
-    if (!booted) {
-      emulator.kill();
-      throw new Error(
-        `Android emulator failed to boot (${emulator.exitCode !== null ? `exit ${emulator.exitCode}` : "boot deadline exceeded"}); see android-emulator logs`,
-      );
-    }
-    // Dismiss first-boot keyguard so remotely launched apps are interactive.
-    await run([t.adb, "-s", SERIAL, "shell", "input", "keyevent", "82"], { timeoutMs: 10_000 });
-    info(`AVD '${AVD_NAME}' boot completed — Android ready (${SERIAL})`);
   };
 
   return {
@@ -307,8 +245,9 @@ export function createAndroidAdapter(options: {
       info(`device: ${model.id} on Android API ${os.version}`);
       return { model, os, ...(full ? { catalog: full } : {}) };
     },
-    async boot(choice: DeviceChoice): Promise<BootedDevice> {
-      startGroup("Android emulator prep");
+    /** Every failure here fails the run: Simlock cannot warm a missing image. */
+    async prepare(choice: DeviceChoice): Promise<void> {
+      startGroup("Android SDK packages");
       try {
         const t = await tools();
         info(`Android SDK at ${t.sdkRoot}`);
@@ -319,9 +258,6 @@ export function createAndroidAdapter(options: {
           timeoutMs: 120_000,
         });
         if (lic.code !== 0) warn(`sdkmanager --licenses exited ${lic.code} (continuing)`);
-
-        // An AVD/system image alone is not runnable: install the emulator
-        // executable too instead of relying on whatever the image ships.
         const { platform, systemImage } = androidPackages(choice.os.version, arch);
         const pkgs = ["platform-tools", "emulator", platform, systemImage];
         info(`sdkmanager ${pkgs.join(" ")}`);
@@ -334,57 +270,15 @@ export function createAndroidAdapter(options: {
           throw new Error(
             `sdkmanager could not install API ${choice.os.version} (exit ${inst.code}): ${inst.stderr.trim().slice(0, 300)}`,
           );
-
-        info(`Android hardware profile: ${choice.model.id}`);
-        const avdHome = Bun.env.ANDROID_AVD_HOME!;
-        avdPath = join(avdHome, `${AVD_NAME}.avd`);
-        // "no" answers the "custom hardware profile?" prompt.
-        const avd = await run(
-          [
-            t.avdmanager,
-            "create",
-            "avd",
-            "-n",
-            AVD_NAME,
-            "--path",
-            avdPath,
-            "-k",
-            systemImage,
-            "-d",
-            choice.model.id,
-            "--force",
-          ],
-          { input: "no\n", timeoutMs: 60_000 },
-        );
-        if (avd.code !== 0)
-          throw new Error(
-            `avdmanager create avd exited ${avd.code}: ${avd.stderr.trim().slice(0, 300)}`,
-          );
-        for (const line of avd.stdout.split("\n")) if (line.trim()) relay("avdmanager", line);
-        if (!existsSync(join(avdPath, "config.ini")))
-          throw new Error(`avdmanager did not create ${avdPath}/config.ini`);
-        // Own this single Simbox registry entry explicitly; SDK generations do
-        // not consistently agree on the default location of the .ini file.
-        await Bun.write(
-          join(avdHome, `${AVD_NAME}.ini`),
-          `avd.ini.encoding=UTF-8\npath=${avdPath}\ntarget=android-${choice.os.version}\n`,
-        );
         const acceleration = await run([t.emulator, "-accel-check"], { timeoutMs: 15_000 });
         info(
           `Android acceleration check (exit ${acceleration.code}): ${acceleration.stdout.trim().slice(0, 500)} ${acceleration.stderr.trim().slice(0, 500)}`,
         );
-        await launch();
-        return { model: choice.model.name, os: choice.os.version, name: AVD_NAME, id: SERIAL };
       } finally {
         endGroup();
       }
     },
-    async relaunch() {
-      // A crashed emulator leaves its instance locks behind.
-      for (const name of await readdir(avdPath).catch(() => [] as string[]))
-        if (name.endsWith(".lock"))
-          await rm(join(avdPath, name), { recursive: true, force: true }).catch(() => {});
-      await launch();
-    },
+    // Simlock accepts avdmanager profile ids ("pixel_8") as model aliases.
+    simlockModel: (choice) => choice.model.id,
   };
 }

@@ -1,132 +1,97 @@
 # Live device previews and controls
 
-Open **Dashboard → Devices → Open device panel** on a live run. Select the exact
-booted device, watch live video, and optionally **Enable control** after reviewing
-the confirmation. The panel never boots/replaces a device or changes a CLI session.
+Open **Dashboard → Devices → Open device panel** on a live run. The panel lists
+the run's Simlock leases: each device an agent has open is viewable. Select one,
+watch live video, and optionally **Enable control** after reviewing the
+confirmation. The panel never leases, boots or replaces a device, and never
+changes a CLI session.
 
 ## Interaction
 
 - Touch/click to tap; drag to swipe, using normalized screen coordinates.
-- Focus the screen to type. iOS forwards HID keyboard down/up events; Android
-  forwards printable characters and navigation keys. iOS paste/IME and Android
-  modifier shortcuts are not supported. Android also has an explicit text field.
-- Home, app switcher, lock/wake; Android Back; iOS rotation.
+- Focus the screen to type. Both platforms forward USB HID key down/up events;
+  shortcuts with Ctrl/Cmd, paste and IME are not supported.
+- Home, app switcher, lock/wake; Android Back.
 - Download the displayed frame as PNG, expand fullscreen, or reconnect video.
-- Only one browser controller can attach to a device. Other tabs can view it.
-  Browser control does **not** lock out CLI agents: coordinate with them.
+- Browser control does **not** lock out CLI agents: coordinate with them.
 
-Viewing and inventory queries do not reset the runner idle timer. Valid controls
-do. Opening a viewer does not create an agent-device session just to keep the
-runner alive. Closing the panel, hiding the tab, switching devices, or ending the
-run closes transports and releases held touch/keyboard input where possible.
-The last frame is marked stale after a disconnect. Reconnect acquires new access
-and only restores video; **no device action is queued or replayed**.
+Simlock's input channel has no rotation or text message, so the panel has no
+Rotate button or Android text field. Use `simbox exec` for those.
 
-## Same transport as T3 Code
+Viewing does not reset the runner idle timer: only leases do. Closing the panel,
+hiding the tab, switching devices, or ending the run closes transports and
+releases held touch/keyboard input where possible. When an agent releases its
+lease, Simlock ends the stream and the panel says so. Reconnect acquires new
+access and only restores video; **no device action is queued or replayed**.
 
-The reference is T3 Code's device panel and `DeviceHubProxy`, not an embedded
-third-party dashboard. Simbox installs **expo-device-hub 0.19.0-canary-20261023-1357114**
-(S5's pin) into an isolated
-runner-temp directory on first preview access, binds it to loopback, and uses:
+## Transport
 
-- Android `serve-emu`: scrcpy H.264 over WebSocket with SEMU v1/v2 frame metadata.
-- iOS `serve-sim`: AVCC-framed H.264 over streaming HTTP and a separate HID socket.
-- WebCodecs decoding onto a canvas; continuous iOS MJPEG video fallback when H.264
-  is unavailable. This fallback is a live hub stream, **not screenshot polling**.
+Simlock serves each lease's video and input; the API Worker proxies both with
+the run's token, because browsers cannot send `Authorization` on a WebSocket
+and Simlock sends no CORS headers:
 
-Android requires a browser with working H.264 WebCodecs (current Chrome/Edge) on
-HTTPS or localhost. Decoder support is checked at runtime; unsupported browsers
-get an actionable error. Audio, WebRTC, foldable-device tooling, app upload,
-accessibility overlays, device creation/boot, and arbitrary shell/RPC commands are
-not part of this panel. Existing CLI app setup/testing remains unchanged.
+| Panel route                             | Simlock                      |
+| --------------------------------------- | ---------------------------- |
+| `GET /v1/runs/:id/preview/devices`      | `GET /v1/leases` (+ devices) |
+| `POST /v1/runs/:id/preview/access`      | — (signs a ticket)           |
+| `GET /v1/runs/:id/preview/video?device` | `GET /v1/leases/:id/stream`  |
+| `WS /v1/runs/:id/preview/socket?ticket` | `WS /v1/leases/:id/input`    |
 
-The hub installs lazily and is supervised separately from the CLI gateway. First
-access may take a few minutes; inventory retries while the panel is visible.
-Hub failure never makes an otherwise functional CLI run fail. serve-sim's
-native capture can stop answering control/video socket admission after aborted
-attachments; the runner detects that admission failure and restarts the hub
-process (viewers reconnect; CLI work is unaffected). Restart/reconnect never
-repeats an input. Android uses the hub's pinned scrcpy server (downloaded
-on first capture); the runner needs outbound access to npm/GitHub in addition to
-the existing API and Cloudflare endpoints. iOS needs the normal Xcode/simulator
-tools. The action's existing platform/tool checks continue to apply.
+- Video, both platforms: Simlock's `[u32 length][u8 tag][payload]` stream over
+  streaming HTTP (avcC, key and delta frames, a JPEG seed frame, and an
+  end-of-lease marker), decoded with WebCodecs onto a canvas.
+- Input: the Worker validates the panel's JSON and translates it to Simlock's
+  binary messages (`0x03` touch, `0x04` button, `0x06` HID key). It forwards
+  only Simlock's screen config (`0x82`) back, and turns its admission (`0x83`)
+  into the panel's ready message.
+
+The panel needs a browser with working H.264 WebCodecs (current Chrome/Edge) on
+HTTPS or localhost. Unsupported browsers get an actionable error. Audio, app
+upload, accessibility overlays, device creation and arbitrary commands are not
+part of this panel.
 
 ## Security and lifecycle
 
-Preview endpoints/tickets never include the daemon token, and the panel never
-connects directly to the runner tunnel. (The existing CLI connection-details
-card is separate and still lets the owner reveal their credentials.)
-Authenticated API endpoints verify run ownership and live
-state, and admit only devices in the observed active inventory. WebSockets use
-HMAC-signed tickets bound to user, run, platform, exact device and read/control
-mode. Tickets expire after **60 seconds for connection admission**; an admitted
-stream has a maximum **five-minute lease**, then reacquires access. Tickets are
-short-lived bearer capabilities, not single-use tokens; treat them as private.
-Logout/session revocation prevents issuing new tickets; an already admitted
-connection can last until its lease ends. Ending a run tears down its runner
-transports, and the API rejects further admission immediately.
+Preview endpoints and tickets never include the run's token, and the panel never
+connects directly to the runner tunnel. (The CLI connection-details card is
+separate and still lets the owner reveal their credentials.) Authenticated API
+endpoints verify run ownership and live state, and admit only leases Simlock
+currently reports. WebSockets use HMAC-signed tickets bound to user, run,
+platform, exact lease and read/control mode. Tickets expire after **60 seconds
+for connection admission**; an admitted stream has a maximum **five-minute
+session**, then reacquires access. Tickets are short-lived bearer capabilities,
+not single-use tokens; treat them as private. Logout/session revocation prevents
+issuing new tickets; an already admitted connection can last until its session
+ends. Ending a run tears down its tunnel, and the API rejects further admission
+immediately.
 
-WebSocket upgrades require the configured app Origin. The API forwards credentials
-only to validated HTTPS `*.trycloudflare.com` origins, never follows redirects,
-and strips browser cookies/credentials from the upstream request. The runner
-requires daemon auth before touching the hub. Only inventory, fixed video paths
-and a validated input socket are reachable—no dashboard, exec, app-management or
-generic hub RPC surface. Read tickets cannot escalate to controls. Inputs are
-size/rate bounded, video parsers and relay frames are bounded, slow runner-side
-clients are disconnected, and at most four preview transports attach per runner
-(an iOS preview uses two). Streams/screenshots use no-store/no-transform and never
-enter an API/cache bucket. Downloaded PNGs are local evidence and may contain
-private app content.
+WebSocket upgrades require the configured app Origin. The API forwards the
+token only to the run's own HTTPS named-tunnel hostname, never follows
+redirects, and strips browser cookies/credentials from the upstream request.
+Only lease inventory, the lease stream and a validated input socket are
+reachable: no agent-device, exec or admin surface. Read tickets cannot escalate
+to controls; read-only sockets that send input are closed. Input messages are
+size bounded and parsed against an allowlist, and video parsers are bounded.
+Streams/screenshots use no-store/no-transform and never enter an API/cache
+bucket. Downloaded PNGs are local evidence and may contain private app content.
 
 ## Verification and rollout
 
 ```bash
-bun test tests
+bun test tests/preview.test.ts tests/preview-api.test.ts tests/preview-stream.test.ts
 bun run test:preview-worker  # real workerd/auth/D1/101 upgrades; mocked runner
-bun run typecheck
-bun run check
 ```
 
-Local browser verification used a generated H.264 fixture through **browser →
-workerd API → real Simbox runner gateway → fixture hub**. It checked actual canvas
-decoding, read-only mode, consent, tap/drag/keyboard/navigation/text translation,
-screenshot download initiation, reconnect without replay, and desktop/mobile
-layout. Separate browser fixtures verified iOS AVCC decoding, landscape touch
-remapping and continuous MJPEG fallback. The official hub also installed and
-started locally.
+Spike S4 (see [the v3 plan](../.plans/v3-simlock.md)) streamed and controlled
+leases through a per-run named tunnel on hosted runners. The panel's port onto
+that path still needs a real end-to-end run on both platforms before release.
 
-**Real-runner verification (2026-10-06):** a real `ubuntu-latest` GitHub runner
-ran an unreleased agent build against a real Android 14 emulator. Browser →
-updated workerd API → real Cloudflare tunnel → runner gateway → expo-device-hub
-delivered live scrcpy H.264 that decoded on canvas. Verified: read-only mode sends
-zero input (confirmed via independent CLI snapshot), consent dialog, direct tap
-navigation into a Settings sub-screen, Back, explicit text field input, Backspace
-key editing, swipe, Home, and transport reconnect — each confirmed against
-independent `agent-device` snapshots and screenshots of the real device, not the
-web view. iOS real-runner verification: a macOS ARM64 runner booted a real
-iPhone 17 Pro simulator (iOS 26.4); the hub reported direct IOSurface capture at
-1206x2622 and served live H.264 AVCC and HID. Verified on the real device:
-tap navigation into Settings → General, touch Back, HID keyboard typing into the
-Settings search field (real "No Results for 'network'" result) and Home,
-confirmed by independent native simulator screenshots. Landscape canvas rotation
-was observed, but physical rotation and landscape control were not independently
-established. Direct MJPEG probes delivered continuous real capture (6 MB in
-15 seconds). Complete iOS browser reconnect/fallback verification did not pass
-reliably; it remains a production testing item rather than a verified success.
-Repeated AVCC attachments stalled while MJPEG and device inventory remained
-healthy. Admission watchdogs restart the hub on timeout, and the web client
-attempts continuous MJPEG when H.264 produces no decodable output. These recovery
-paths are covered by regression tests, not a complete passing real-device run.
-
-Release the agent/action and deploy the API/dashboard together. Older active
-agents lack preview routes: retain CLI access, then start a new run after upgrade.
-No new preview-specific database migration is needed; the accompanying runner
-settings migration still must precede the combined API release. Keep existing
-agent-device version compatibility and release-generated binary checksums intact.
+Release the agent/action and deploy the API/dashboard together. Agents that
+predate Simlock are refused at registration; start a new run after
+`simbox repair`.
 
 ## Attribution
 
-The wire/client design references [T3 Code](https://github.com/pingdotgg/t3code),
-especially `packages/client-runtime/src/device/stream.ts`, `DeviceStreamView`, and
-`DeviceHubProxy`. Protocol parsing/input mappings are adapted for Simbox's Worker
-and Bun transports. See [third-party notices](THIRD-PARTY-NOTICES.md).
+Devices, leases, video and input come from [Simlock](https://incubator.callstack.com/simlock/)
+(Callstack). The panel's canvas client originally followed
+[T3 Code](https://github.com/pingdotgg/t3code)'s `DeviceStreamView`. See [third-party notices](THIRD-PARTY-NOTICES.md).

@@ -1,17 +1,14 @@
 import { expect, test } from "bun:test";
 import {
-  previewInventory,
+  leaseInventory,
   parsePreviewInput,
-  hubInput,
+  simlockInput,
   validPreviewDevice,
   hidUsage,
 } from "../packages/shared/src/preview";
 import {
-  androidFrame,
-  scanAnnexB,
   avcCodec,
   AvccFrames,
-  JpegFrames,
   devicePoint,
   iosDisplayRotation,
   iosRawPoint,
@@ -22,33 +19,36 @@ import {
   bridgePreviewSockets,
 } from "../apps/api/src/preview-ticket";
 
-test("preview inventory includes only exact booted supported virtual targets", () => {
-  const item = {
-    id: "emulator-5554",
-    name: "Pixel",
-    platform: "android",
-    booted: true,
-    physical: false,
-    version: "Android 14",
-  };
-  const inventory = previewInventory(
+test("preview inventory is the run's Simlock leases, named from its devices", () => {
+  const lease = { id: "lse_1", deviceId: "dev_1" };
+  const inventory = leaseInventory(
     {
-      emulators: [
-        item,
-        item,
-        { ...item, id: "off", booted: false },
-        { ...item, id: "physical", physical: true },
-        { ...item, id: "bad", supported: false },
-        { ...item, id: "../../exec" },
-        { ...item, id: "ios", platform: "ios" },
+      leases: [
+        lease,
+        lease,
+        { id: "lse_2", deviceId: "dev_unknown" },
+        { id: "lse_3", deviceId: "dev_physical" },
+        { id: "lse_4", deviceId: "dev_ios" },
+        { id: "../../exec", deviceId: "dev_1" },
+      ],
+    },
+    {
+      devices: [
+        { id: "dev_1", spec: { platform: "android", model: "Pixel 8", osVersion: "35" } },
+        { id: "dev_physical", spec: { platform: "android", model: "Pixel", physical: true } },
+        { id: "dev_ios", spec: { platform: "ios", model: "iPhone 17", osVersion: "26.5" } },
       ],
     },
     "android",
   );
   expect(inventory.devices).toEqual([
-    { id: item.id, name: item.name, platform: "android", version: item.version },
+    { id: "lse_1", name: "Pixel 8", platform: "android", version: "35" },
+    { id: "lse_2", name: "Leased device", platform: "android", version: "" },
   ]);
   expect(inventory.observedAt).toBeGreaterThan(0);
+  // Without the device list, leases are still viewable.
+  expect(leaseInventory({ leases: [lease] }, null, "ios").devices).toHaveLength(1);
+  expect(() => leaseInventory({}, null, "ios")).toThrow();
   for (const value of ["../a", "a/b", "?device=x", "$(id)", "a%2Fexec", "", "x".repeat(129)])
     expect(validPreviewDevice(value)).toBe(false);
 });
@@ -73,18 +73,29 @@ test("control validation rejects generic RPC, shell and unbounded gestures", () 
     y: 0.25,
     command: "untrusted",
   });
-  expect(hubInput("android", touch)).toBe('{"type":"touch","action":"down","x":0.5,"y":0.25}');
-  const ios = hubInput("ios", touch) as Uint8Array;
-  expect(ios[0]).toBe(3);
-  expect(JSON.parse(new TextDecoder().decode(ios.subarray(1)))).toEqual({
+  const encoded = simlockInput(touch)!;
+  expect(encoded[0]).toBe(3);
+  expect(JSON.parse(new TextDecoder().decode(encoded.subarray(1)))).toEqual({
     type: "begin",
     x: 0.5,
     y: 0.25,
   });
-  expect(hubInput("ios", { type: "button", button: "back" })).toBeNull();
+  const button = (name: "home" | "back" | "recents" | "power") =>
+    JSON.parse(
+      new TextDecoder().decode(simlockInput({ type: "button", button: name })!.subarray(1)),
+    ).button;
+  expect([button("home"), button("back"), button("recents"), button("power")]).toEqual([
+    "home",
+    "back",
+    "app_switcher",
+    "lock",
+  ]);
   expect(hidUsage("KeyA")).toBe(4);
   expect(hidUsage("ShiftLeft")).toBe(225);
-  expect(hubInput("android", { type: "key", phase: "up", code: "KeyA", key: "a" })).toBeNull();
+  expect(simlockInput({ type: "key", phase: "up", code: "KeyA", key: "a" })![0]).toBe(6);
+  // Simlock's input socket cannot rotate or type text.
+  expect(simlockInput({ type: "text", text: "hi" })).toBeNull();
+  expect(simlockInput({ type: "rotate", orientation: "landscape_left" })).toBeNull();
 });
 
 test("short-lived preview tickets bind user/run/device/platform/control and resist tampering", async () => {
@@ -112,21 +123,8 @@ test("short-lived preview tickets bind user/run/device/platform/control and resi
   expect(await verifyPreviewTicket(secret, `${tampered}.${signature}`, now)).toBeNull();
 });
 
-test("SEMU v1/v2, Annex B and fragmented AVCC parsers support both hub video formats", () => {
-  const annex = new Uint8Array([0, 0, 0, 1, 0x67, 0x42, 0xe0, 0x1e, 0, 0, 1, 0x65, 0xff]);
-  expect(scanAnnexB(annex).key).toBe(true);
-  expect(avcCodec(scanAnnexB(annex).sps!)).toBe("avc1.42e01e");
-  for (const version of [1, 2]) {
-    const offset = version === 1 ? 16 : 24;
-    const packet = new Uint8Array(offset + annex.length);
-    const view = new DataView(packet.buffer);
-    view.setUint32(0, 0x53454d55);
-    view.setUint8(4, version);
-    view.setUint8(5, 1);
-    view.setBigUint64(8, 123n);
-    packet.set(annex, offset);
-    expect(androidFrame(packet.buffer)).toEqual({ data: annex, key: true, timestamp: 123 });
-  }
+test("fragmented Simlock stream frames, codec strings and coordinate maps", () => {
+  expect(avcCodec(new Uint8Array([1, 0x42, 0xe0, 0x1e, 0xff]))).toBe("avc1.42e01e");
   const avcc = new Uint8Array([0, 0, 0, 4, 1, 10, 20, 30, 0, 0, 0, 2, 2, 40]);
   const parser = new AvccFrames();
   const frames = Array.from(avcc, (byte) => parser.push(new Uint8Array([byte]))).flat();
@@ -135,11 +133,6 @@ test("SEMU v1/v2, Annex B and fragmented AVCC parsers support both hub video for
     { tag: 2, payload: new Uint8Array([40]) },
   ]);
   expect(() => new AvccFrames().push(new Uint8Array([0xff, 0xff, 0xff, 0xff]))).toThrow();
-  const jpeg = new JpegFrames();
-  expect(jpeg.push(new Uint8Array([45, 45, 255]))).toEqual([]);
-  expect(jpeg.push(new Uint8Array([216, 1, 2, 255, 217]))).toEqual([
-    new Uint8Array([255, 216, 1, 2, 255, 217]),
-  ]);
   expect(devicePoint({ left: 10, top: 20, width: 100, height: 200 }, 60, 120)).toEqual({
     x: 0.5,
     y: 0.5,
@@ -168,7 +161,7 @@ class Socket extends EventTarget {
     this.dispatchEvent(new MessageEvent("message", { data }));
   }
 }
-test("Worker socket bridge enforces read-only input, forwards binary frames and closes both peers", () => {
+test("Worker socket bridge translates input, enforces read-only and closes both peers", () => {
   const client = new Socket();
   const upstream = new Socket();
   const stop = bridgePreviewSockets(
@@ -176,13 +169,25 @@ test("Worker socket bridge enforces read-only input, forwards binary frames and 
     upstream as unknown as WebSocket,
     false,
   );
+  // Admission becomes the panel's ready event; screen config passes through.
+  upstream.message(new Uint8Array([0x83]).buffer);
+  upstream.message(new Uint8Array([0x82, 0x7b, 0x7d]).buffer);
   upstream.message(new Uint8Array([1, 2]).buffer);
-  expect(client.sent).toHaveLength(1);
+  expect(client.sent).toHaveLength(2);
+  expect(JSON.parse(client.sent[0] as string)).toEqual({ type: "ready", control: false });
   client.message('{"type":"reset-video"}');
-  expect(upstream.sent).toHaveLength(1);
+  expect(upstream.sent).toHaveLength(0);
   client.message('{"type":"button","button":"home"}');
   expect(client.closed).toMatchObject([{ code: 1008 }]);
   expect(upstream.closed).toMatchObject([{ code: 1008 }]);
   stop();
   expect(client.closed).toHaveLength(1);
+
+  const controller = new Socket();
+  const device = new Socket();
+  bridgePreviewSockets(controller as unknown as WebSocket, device as unknown as WebSocket, true);
+  controller.message('{"type":"touch","phase":"begin","x":0.5,"y":0.5}');
+  expect((device.sent[0] as Uint8Array)[0]).toBe(3);
+  controller.message('{"type":"exec","command":"ls"}');
+  expect(controller.closed).toMatchObject([{ code: 1008 }]);
 });

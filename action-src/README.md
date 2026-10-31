@@ -107,39 +107,40 @@ for account defaults, repository overrides, Blacksmith prerequisites and custom 
   against the digest embedded in this `action.yml` (`shasum -a 256 -c`), and
   records the job's start time for the agent's hard-exit clock.
 - **start** launches `simbox-agent` in the background. It reads the run's
-  platform and device from the API, installs `agent-device` + `cloudflared`
-  (versions pinned in the binary), starts `agent-device proxy` on
-  `127.0.0.1:4311` behind an activity-aware gateway on `127.0.0.1:4310`, and
-  boots the requested simulator (building XCTest) or Android emulator. A
-  requested device or OS the runner cannot provide fails the step with the
-  list of what it offers. The step streams the agent's log and finishes once
-  the device is booted; nothing is reachable yet.
+  platform and device from the API, installs `simlock`, `agent-device` and
+  `cloudflared` (versions pinned in the binary; Android also needs
+  `libpulse0`, which **prepare** installs), configures one Simlock warm target
+  for the requested device and starts the Simlock daemon on `127.0.0.1:4701`.
+  Once a device is warm it runs an `open`/`snapshot`/`close` self-test through
+  Simlock (on iOS this builds the XCTest runner) and mints the run's Simlock
+  agent token. A requested device or OS the runner cannot provide fails the
+  step with the list of what it offers; so does a device that never warms.
+  The step streams the agent's log and finishes once the device is warm;
+  nothing is reachable yet.
 - **serve** lets the agent open the tunnel and register `tunnel_url` + a
   per-run `daemon_token` with the API over TLS (`Authorization: Bearer
 SIMBOX_TOKEN`) — neither ever hits the logs. It streams the agent's log until
   the run ends, forwards cancellation to the agent so it can deregister, and
   exits with the agent's exit code.
-- **all** does all of the above in one step, except that an Android emulator
-  keeps booting after the run goes live (`android_ready` reports completion).
+- **all** does all of the above in one step.
 
-While serving, the agent streams JSON-RPC keepalives during long commands to
-avoid Cloudflare 524s and heartbeats every 60s; authenticated in-flight RPCs
-postpone idle exit (each request is bounded to 10 minutes). It exits after 15
-min idle or 5h45m after the job started (clean shutdown before GitHub's 6h
+While serving, the agent heartbeats every 60s with Simlock's lease count and
+restarts the daemon or tunnel if either dies. It exits after 15 min with no
+lease and no queued lease request, or 5h45m after the job started (clean shutdown before GitHub's 6h
 limit → green checkmark), or with exit 0 when the run is stopped from Simbox.
 
 ## Security notes
 
 - `SIMBOX_TOKEN` is a repo secret — GitHub masks it automatically.
-- The tunnel URL and daemon token are minted in-runner, masked via
+- The tunnel URL and the Simlock agent token are minted in-runner, masked via
   `::add-mask::`, and only ever sent to the API inside the TLS body.
-- `SIMBOX_TOKEN` stays in the agent process: npm, agent-device, cloudflared,
-  the emulator and your own steps never receive it from the agent.
-- The agent tarball is sha256-pinned here; `agent-device`/`cloudflared`
+- `SIMBOX_TOKEN` stays in the agent process: npm, Simlock, agent-device,
+  cloudflared, the emulator and your own steps never receive it from the agent.
+- The agent tarball is sha256-pinned here; `simlock`/`agent-device`/`cloudflared`
   versions are pinned in the agent's `src/pins.ts`.
-- The tunnel hostname is unguessable (a per-run named tunnel, or a
-  `*.trycloudflare.com` quick tunnel as fallback) and every proxied command
-  additionally requires the per-run daemon token.
+- Each run has its own named tunnel, deleted when the run ends. Everything
+  under Simlock's `/v1` except `/v1/healthz` also requires the run's agent
+  token, which Simlock checks.
 
 ## Releasing
 

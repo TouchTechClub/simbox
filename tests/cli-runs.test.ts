@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { DevicePlatform, PublicRun, RunSummary } from "../packages/shared/src/index.js";
-import type { ConnectInfo } from "../apps/cli/src/connect.js";
+import { sessionName, type ConnectInfo } from "../apps/cli/src/connect.js";
 import { remoteArgs, shouldReplay } from "../apps/cli/src/remote.js";
 import {
   connect,
@@ -338,17 +338,27 @@ describe("remote commands", () => {
       ["open", "com.apple.Preferences", "--device", "iPhone"],
       info,
       "/state",
+      undefined,
     );
     const nextArgs = remoteArgs(
       ["open", "com.apple.Preferences", "--device", "iPhone"],
       { ...info, tunnelUrl: "https://new.example" },
       "/state",
+      undefined,
     );
     expect(oldArgs).toContain("300000");
     expect(oldArgs).toContain("simbox-run-1");
     expect(nextArgs.slice(0, -3)).toEqual(oldArgs.slice(0, -3));
-    expect(nextArgs.at(-3)).toBe("https://new.example/agent-device");
+    // Simlock serves agent-device under its versioned API.
+    expect(nextArgs.at(-3)).toBe("https://new.example/v1/agent-device");
     expect(oldArgs.join(" ")).not.toContain("secret");
+  });
+  test("agents sharing a run get their own session, so their own Simlock lease", () => {
+    const a = remoteArgs(["snapshot"], info, "/state", "aaaaaaaa1111");
+    const b = remoteArgs(["snapshot"], info, "/state", "bbbbbbbb2222");
+    expect(a).toContain("simbox-run-1-aaaaaaaa");
+    expect(b).toContain("simbox-run-1-bbbbbbbb");
+    expect(sessionName("run-1")).toBe("simbox-run-1");
   });
   test("routing flags are inserted before a positional separator", () => {
     const args = remoteArgs(["open", "--", "--some-app"], info, "/state");

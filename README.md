@@ -1,14 +1,14 @@
 # Simbox
 
-Free on-demand iOS simulators & Android emulators running on your own GitHub Actions minutes, exposed to your local machine as an `agent-device` remote proxy.
+Free on-demand iOS simulators & Android emulators running on your own GitHub Actions minutes. Each run is a [Simlock](https://incubator.callstack.com/simlock/) daemon your machine reaches with `agent-device`.
 
-**Plan:** [.plans/v1-plan.md](.plans/v1-plan.md)
+**Plan:** [.plans/v3-simlock.md](.plans/v3-simlock.md) (Simlock); [v1](.plans/v1-plan.md) for history.
 
 ## How it works
 
 1. Sign in with GitHub on the dashboard, install the GitHub App, pick a repo.
 2. We commit `.github/workflows/simbox.yml` to the repo and write a `SIMBOX_TOKEN` secret.
-3. `simbox sim` asks our API for a run → we `workflow_dispatch` into your repo → your selected macOS/iOS or Linux/Android runner boots the requested device, then `agent-device proxy` + a Cloudflare tunnel → the tunnel URL + daemon token come back to your CLI.
+3. `simbox sim` asks our API for a run → we `workflow_dispatch` into your repo → your selected macOS/iOS or Linux/Android runner starts Simlock, which warms the requested device, behind the run's own Cloudflare tunnel → the tunnel URL + the run's Simlock token come back to your CLI.
 4. Drive sims/emulators with `simbox exec <agent-device command>` until the run ends (idle timeout, `simbox stop`, or ~6h).
 
 Several runs can be live at once: up to 5 iOS and 10 Android runs per account
@@ -21,15 +21,13 @@ share the least busy run.
 ## Use
 
 ```bash
-npm i -g @touchtechclub/simbox agent-device@0.21.28
+npm i -g @touchtechclub/simbox agent-device@0.21.35
 simbox login
 simbox init
 simbox sim --platform ios --device "iPhone 16 Pro" --os 18.4  # or plain `simbox sim`
-simbox exec devices --platform ios
-# `sim` prints the booted device and UDID; pick an exact name/UDID from inventory.
-simbox exec open com.apple.Preferences --platform ios --device "iPhone 16 Pro"
+simbox exec open com.apple.Preferences --platform ios  # leases the warm device
 simbox exec snapshot -i --platform ios
-simbox exec close --shutdown --platform ios
+simbox exec close --platform ios   # releases it; Simlock wipes it for the next lease
 simbox stop --platform ios   # or --all
 ```
 
@@ -47,27 +45,27 @@ models and OS versions a runner offers, once it has run in your repository; the
 API rejects a combination that catalog cannot satisfy before dispatching. A
 run's device is fixed: changing it (or the runner) needs `--new`.
 
-`exec` supplies the daemon token and refreshes the tunnel URL before **each**
-command. Its session is stable for the GitHub run, even if the tunnel restarts.
-Cold `open`/`boot`/`prepare` commands get a five-minute startup budget; override
+`exec` supplies the run's token and refreshes the tunnel URL before **each**
+command. Its session (`simbox-<run>-<agent>`) is stable for the GitHub run, even
+if the tunnel restarts, and separate for each agent sharing the run. Cold
+`open`/`boot`/`prepare` commands get a five-minute startup budget; override
 with `--timeout <ms>`. To use several sessions/devices, pass `--session <name>`
-consistently to each command. Simbox never automatically replays device actions
+consistently to each command. A run leases at most `maxDevices` devices at once. Simbox never automatically replays device actions
 after a transport failure: inspect with `simbox exec session list` first. Only
 read-only or absolute commands (`devices`, `snapshot`, `screenshot`, `fold`,
 `session`, `appstate`, `apps`, `get`, `is`) are retried, up to twice, when the
 tunnel drops.
-The runner streams JSON whitespace keepalives during RPCs so a cold boot does
-not hit Cloudflare's idle-response timeout. Startup progress is buffered; the
-final command result is returned when ready.
-iOS runs boot their iPhone and build agent-device's XCTest runner before the
-run goes live, which adds a few minutes to startup. A simulator's first boot
+Simlock leases, wipes and streams the devices. The run goes live only after
+its device is warm and a full `open`/`snapshot`/`close` through Simlock has
+passed; on iOS that also builds agent-device's XCTest runner, which adds a few
+minutes to startup. A simulator's first boot
 saturates the 3-vCPU hosted Macs for several minutes; commands sent during it
 time out and the tunnel drops. So Simbox counts a run as full at one device per
 4 vCPUs (at most 3) and sends other agents to another run; set `maxDevices` in a
 JSON `--runner` to override, for example
 `--runner '{"labels":["blacksmith-12vcpu-macos-latest"],"maxDevices":2}'`. The runner also turns off host Spotlight
-indexing and raises cloudflared's priority. Warmup failures are warnings, not
-fatal run failures. Android runs on Linux and never waits for iOS. iOS runs
+indexing and raises cloudflared's priority. A device that does not warm, or a
+failed self-test, fails the run. Android runs on Linux and never waits for iOS. iOS runs
 default to GitHub's Xcode 27 image (`xcode-27`, a public preview) and use its
 newest release Xcode; `--runner macos-latest` gives Xcode 26. A manual Actions
 dispatch with empty `runner_labels` still uses `macos-latest`.
@@ -78,18 +76,18 @@ for the emulator, even when `-accel-check` reports success. Start with
 Without a platform flag, `sim` reuses the only active run, else uses iOS.
 
 Update the CLI and run `simbox repair` once (merge its PR if the branch is
-protected) to install the current workflow. Older workflows still work, one
-platform at a time. Repair rotates `SIMBOX_TOKEN` only when no run is active.
+protected) to install the current workflow. Runners whose agent predates
+Simlock are refused with a message to repair. Repair rotates `SIMBOX_TOKEN`
+only when no run is active.
 
-The workflow boots the device before the run goes live. `sim` and `exec` wait
-until `devices_ready: yes` (for Android, the emulator has completed boot) before
-sending commands:
+`sim` and `exec` wait until `devices_ready: yes` (Simlock has a warm device)
+before sending commands:
 
 ```bash
 simbox sim --new --platform android --json
-simbox exec boot --platform android --device simbox --headless
-simbox exec open com.android.settings --platform android --device simbox
+simbox exec open com.android.settings --platform android
 simbox exec snapshot -i --platform android
+simbox exec close --platform android
 ```
 
 Direct `agent-device` clients remain supported via the exports printed by
@@ -134,12 +132,13 @@ Details: [runners, devices, workflow and skills](docs/RUNNERS-AND-SKILLS.md).
 
 ## Live device panel
 
-On a live run, open **Dashboard → Devices → Open device panel** to see active
-devices with live H.264 video. Enable control explicitly for tap/drag, keyboard,
-navigation and text input; screenshots and fullscreen are available too. This
-uses the same `expo-device-hub` backend as T3 Code, not screenshot polling.
-Preview routes are authenticated and viewing doesn't reset the runner idle timer.
-Android needs H.264 WebCodecs on HTTPS/localhost; iOS can fall back to live MJPEG.
+On a live run, open **Dashboard → Devices → Open device panel** to see the
+run's leased devices with live H.264 video from Simlock. Enable control
+explicitly for tap/drag, keyboard and navigation buttons; screenshots and
+fullscreen are available too. The API proxies Simlock's lease stream and input
+socket with the run's token. Preview routes are authenticated and viewing
+doesn't reset the runner idle timer. The panel needs H.264 WebCodecs on
+HTTPS/localhost.
 See [device previews](docs/DEVICE-PREVIEWS.md) for details and rollout requirements.
 
 ## S5 Code integration

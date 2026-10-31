@@ -24,12 +24,12 @@ export const SIMBOX_STEPS: Record<SimboxStepKey, { name: string; description: st
   start: {
     name: "Start devices",
     description:
-      "Boots the requested simulator or emulator in the background. Devices are booted but not reachable yet, so steps after this one can install apps or seed data.",
+      "Starts Simlock and warms the requested simulator or emulator in the background. The device is warm but not reachable yet, so steps after this one can prepare the runner.",
   },
   serve: {
     name: "Serve devices",
     description:
-      "Opens the tunnel, marks the run live and serves devices until idle, stop or the time limit. Steps after it run once the session ends.",
+      "Opens the tunnel to Simlock, marks the run live and serves devices until idle, stop or the time limit. Steps after it run once the session ends.",
   },
 };
 

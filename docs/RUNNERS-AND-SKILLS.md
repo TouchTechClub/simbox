@@ -70,7 +70,8 @@ than guessing which job is which. Manual Actions dispatch can leave
   and container-only Ubuntu images are not supported in this release.
 - macOS ARM64 needs Xcode with Simulator support plus Node/npm/curl/tar/shasum.
   The action checks host OS/architecture against the requested platform before
-  downloading binaries. Emulator acceleration/boot is checked during provisioning.
+  downloading binaries. Emulator acceleration is checked during provisioning, and
+  Android needs `libpulse0` (the action installs it with passwordless sudo).
 - Self-hosted runners must be trusted and appropriately isolated: the action
   receives repository/run credentials. Ensure outbound HTTPS and Cloudflare
   tunnel connectivity. A nonexistent label can remain queued; Simbox's startup
@@ -112,10 +113,10 @@ defaults; `ps` prints each run's requested and booted device.
 
 `.github/workflows/simbox.yml` is rendered from a list of steps. Three are locked
 and always run in order: **prepare** (check the runner, download the agent),
-**start** (boot the devices; nothing is reachable yet) and **serve** (open the
+**start** (start Simlock and warm the device; nothing is reachable yet) and **serve** (open the
 tunnel and serve until the run ends). Your steps can go before `start` (checkout,
-build), between `start` and `serve` (install apps, seed data on the booted
-device) or after `serve` (runs once the session ends).
+build), between `start` and `serve` (prepare the runner while the device is
+warm) or after `serve` (runs once the session ends).
 
 ```bash
 simbox workflow show                     # --yaml for the rendered file
@@ -140,7 +141,7 @@ the file on GitHub are replaced the next time Simbox saves or repairs it.
 
 `--foldable` prepares a foldable device instead of the default phone (it can
 also be a default: `simbox devices set <platform> --foldable`); `--xcode` selects
-an installed Xcode before the device daemon starts. Both require `--platform` and
+an installed Xcode before Simlock starts. Both require `--platform` and
 are fixed for the life of a run, so changing them needs `--new`.
 
 ```bash
@@ -149,19 +150,18 @@ simbox sim --new --platform android --foldable
 simbox exec fold closed      # or half-open / open
 ```
 
-- **iOS** creates an iPhone Duo in the default simulator set (agent-device's
-  `fold` refuses custom sets). It needs Xcode 27.1 or later; GitHub's
+- **iOS** warms an iPhone Duo. It needs Xcode 27.1 or later; GitHub's
   `xcode-27` image is a preview and can queue slowly. That image ships only the
   iOS 27.0 simulator runtime, so the runner downloads the 27.1 runtime first,
   which adds several minutes to startup. Without `--xcode`, the newest
   installed Xcode that has the iPhone Duo is used.
-- **Android** boots the SDK's generic 7.6in Foldable (1768x2208 with a hinge
+- **Android** warms the SDK's generic 7.6in Foldable (1768x2208 with a hinge
   sensor and closed, half-open and open postures). The hosted command-line
   tools have no `pixel_fold` profile; Simbox uses it when the SDK provides one.
   Folding commits the device state apps observe (Jetpack WindowManager posture
   and hinge angle), but this profile has no separate cover display, so
   screenshots stay 1768x2208 in every pose.
-- `fold` needs agent-device 0.21.28 or later on the client and an open session.
+- `fold` needs agent-device 0.21.35 on the client on the client and an open session.
   It reads the hinge angle back after each pose. On the busy xcode-27 image
   devicectl sometimes answers "no display table" or times out; setting a pose
   is idempotent, so retry it.
@@ -193,8 +193,8 @@ No Simbox login is needed. Set `DISABLE_TELEMETRY=1` to disable upstream telemet
 
 ## Live-video previews
 
-The dashboard now includes **live video and optional browser controls**, based on
-the same device hub as T3 Code. See [device previews](DEVICE-PREVIEWS.md) for
+The dashboard includes **live video and optional browser controls** for the
+run's leased devices, served by Simlock through the API. See [device previews](DEVICE-PREVIEWS.md) for
 transport, security, controls, browser requirements and remaining real-device
 verification. Landing-page work remains outside this release's scope.
 

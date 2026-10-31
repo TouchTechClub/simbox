@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { CliError } from "./client.js";
 import { configDir } from "./config.js";
-import { daemonBaseUrl, findAgentDevice } from "./connect.js";
+import { daemonBaseUrl, findAgentDevice, sessionName } from "./connect.js";
+import { holderId } from "./holder.js";
 import type { ConnectInfo } from "./connect.js";
 import { sleep } from "./util.js";
 import { registerDevice } from "./device-registration.js";
@@ -11,17 +12,22 @@ import { connectForArgs, probeRemote, refreshRun, waitForRemote } from "./runs.j
 
 export const STARTUP_TIMEOUT_MS = 300_000;
 
-export function remoteArgs(args: string[], info: ConnectInfo, stateDir: string): string[] {
+export function remoteArgs(
+  args: string[],
+  info: ConnectInfo,
+  stateDir: string,
+  holder = holderId(),
+): string[] {
   // Isolate from saved agent-device proxy profiles: those may hold a stale URL
-  // or an orphaned lease from a timed-out open. The daemon itself still enforces
-  // exclusive device ownership by session. Do not overwrite user-owned config.
+  // or an orphaned lease from a timed-out open. Simlock leases one device per
+  // session. Do not overwrite user-owned config.
   const separator = args.indexOf("--");
   const result = separator < 0 ? [...args] : args.slice(0, separator);
   const tail = separator < 0 ? [] : args.slice(separator);
   if (["open", "boot", "prepare"].includes(args[0] ?? "") && !hasFlag(args, "--timeout")) {
     result.push("--timeout", String(STARTUP_TIMEOUT_MS));
   }
-  if (!hasFlag(args, "--session")) result.push("--session", `simbox-${info.runId}`);
+  if (!hasFlag(args, "--session")) result.push("--session", sessionName(info.runId, holder));
   result.push(
     "--state-dir",
     stateDir,
@@ -87,7 +93,7 @@ export async function cmdExec(args: string[]): Promise<void> {
     throw new CliError("Use device commands with `simbox exec`, not connection/auth commands.");
   }
   const bin = findAgentDevice();
-  if (!bin) throw new CliError("Install agent-device first: npm i -g agent-device@0.21.28");
+  if (!bin) throw new CliError("Install agent-device first: npm i -g agent-device@0.21.35");
   // Each agent uses its own run and cache; the platform is explicit, or the
   // only one this agent uses. An iOS endpoint never serves an Android command.
   const { platform, info } = await connectForArgs(args);

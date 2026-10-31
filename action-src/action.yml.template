@@ -80,6 +80,11 @@ runs:
           if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
             sudo -n chmod 666 /dev/kvm || { echo "Grant the runner user read/write access to /dev/kvm" >&2; exit 1; }
           fi
+          # The emulator links libpulse even with audio off; ubuntu-24.04 images lack it.
+          if ! ldconfig -p 2>/dev/null | grep -q 'libpulse\.so\.0'; then
+            { sudo -n apt-get update -qq && sudo -n apt-get install -y -qq libpulse0 >/dev/null; } \
+              || { echo "Install libpulse0 on the runner (the Android emulator needs it)" >&2; exit 1; }
+          fi
         fi
         case "$(uname -s)-$(uname -m)" in
           Darwin-arm64) TARBALL=simbox-agent-darwin-arm64.tar.gz; SHA={{SHA256}} ;;

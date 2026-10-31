@@ -28,8 +28,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-## Runtime video backend
+## Runtime device backend
 
-`expo-device-hub` is MIT-licensed and includes its own licenses/notices for the
-vendored `serve-sim` and `serve-emu` tools. The pinned package is installed with
-those notices intact into the runner's temporary directory.
+[Simlock](https://github.com/callstackincubator/simlock) (Callstack) is
+MIT-licensed. The runner installs the pinned npm package, with its own
+licenses and notices intact, and runs it as the run's device daemon.

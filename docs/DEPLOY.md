@@ -123,11 +123,14 @@ npm publish --access public     # first publish of @touchtechclub/simbox must be
 CLI defaults to `PROD_API_URL`; users can override via `SIMBOX_API_URL` / `SIMBOX_WEB_URL` env.
 
 Use `simbox exec <agent-device command>` for device operations. It injects the
-per-run daemon token, resolves the latest tunnel on each command, and uses a
-stable run-scoped session in Simbox's own state directory (without modifying
-agent-device global/proxy profiles). Cold startup gets a 300000 ms budget.
-Clients should use `agent-device@0.21.28`, matching the runner pin. Existing
-runs keep the old agent until stopped/recreated after a release.
+run's Simlock agent token, resolves the latest tunnel on each command, and uses
+a stable session per run and agent in Simbox's own state directory (without
+modifying agent-device global/proxy profiles). Cold startup gets a 300000 ms
+budget. Clients should use `agent-device@0.21.35`, matching the runner pin.
+Runners whose agent predates Simlock are refused at registration (409
+`agent_outdated`), and new agents need the API's Simlock tunnel port, so
+release the action and deploy the API together, then run `simbox repair` in
+each repository.
 
 Android testing uses `simbox sim --platform android --new`: the repaired workflow
 dispatches `ubuntu-latest`, grants `/dev/kvm` access, and downloads the sha256-pinned
@@ -137,7 +140,7 @@ keeps its own run. The `concurrent_runs` migration must be applied before the AP
 that uses it deploys, and before releasing the CLI/agent. Run `simbox repair`
 after upgrading to install the current workflow (`platform`, `runner_labels` and
 `simbox_run` inputs, staged steps); older workflows run one platform at a time.
-Android readiness requires `sys.boot_completed=1`, not merely AVD creation.
+A run is ready once Simlock reports a warm device and the agent's self-test passed.
 
 ---
 

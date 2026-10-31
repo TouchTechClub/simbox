@@ -421,7 +421,7 @@ function RunCard({ run, onPreview }: { run: PublicRun; onPreview?: () => void })
   const isLive = run.state === "live";
 
   const copyConnect = async () => {
-    const cmd = `export AGENT_DEVICE_DAEMON_AUTH_TOKEN=${run.daemonToken ?? ""}\nagent-device connect proxy --daemon-base-url ${run.tunnelUrl ?? ""}/agent-device`;
+    const cmd = `export AGENT_DEVICE_DAEMON_AUTH_TOKEN=${run.daemonToken ?? ""}\nagent-device connect proxy --daemon-base-url ${run.tunnelUrl ?? ""}/v1/agent-device --session simbox-${run.id}`;
     try {
       await navigator.clipboard.writeText(cmd);
       setCopied(true);
@@ -495,7 +495,7 @@ function RunCard({ run, onPreview }: { run: PublicRun; onPreview?: () => void })
               </TermLine>
               <TermLine>
                 <span className="text-zinc-500">agent-device</span> connect proxy --daemon-base-url{" "}
-                {run.tunnelUrl}/agent-device
+                {run.tunnelUrl}/v1/agent-device --session simbox-{run.id}
               </TermLine>
             </Terminal>
             <div className="flex gap-2">

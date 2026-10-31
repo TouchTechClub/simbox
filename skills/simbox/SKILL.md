@@ -5,7 +5,8 @@ description: Start and control remote iOS simulators or Android emulators on Git
 
 # Simbox
 
-Simbox manages runners and credentials; `agent-device` drives devices. Use
+Simbox manages runners and credentials; each run is a Simlock daemon that
+leases its devices, and `agent-device` drives them. Use
 `simbox exec <agent-device arguments>` so auth/tunnel routing refreshes before
 each command. Do not write global agent-device profiles or expose run JSON tokens.
 
@@ -28,12 +29,12 @@ simbox runners show
 simbox devices list --platform ios      # models/OS the runner reported
 simbox sim --platform ios --device "<model from devices list>" --os latest
 simbox sim --platform android           # runs alongside the iOS run
-simbox exec devices --platform android
 ```
 
 A platform can have several runs. **Always pass `--platform` to `sim`, `exec`
-and `stop`**; they use this agent's run. Hosted Macs fit one device at a time:
-close devices when done, or use `sim --new` for another run. Runner priority is explicit `--runner` →
+and `stop`**; they use this agent's run, in a session of its own. Hosted Macs
+fit one device at a time: close devices when done, or use `sim --new` for
+another run. Runner priority is explicit `--runner` →
 repository override → account default → GitHub default; device model and OS
 defaults layer the same way, field by field. Custom labels can be a JSON array.
 Blacksmith needs its GitHub App and bills separately; do not silently select a
@@ -55,30 +56,32 @@ repository (or opens a PR on a protected branch) and needs push access:
 simbox workflow show
 simbox workflow add --name Checkout --uses actions/checkout@v4   # before start
 simbox workflow add --name "Install app" --run "./scripts/install.sh" \
-  --platform android --after start   # devices booted, not yet reachable
+  --platform android --after start   # device warm, not yet reachable
 simbox workflow remove install-app
 ```
 
 `prepare`, `start` and `serve` are locked. Changes apply to the next run.
 
-The dashboard shows live video, read-only unless a human enables control;
-coordinate before mixing browser and CLI inputs.
+The dashboard shows live video of leased devices, read-only unless a human
+enables control; coordinate before mixing browser and CLI inputs.
 
 ## Test
 
-Choose an exact device from inventory; do not assume an iPhone name.
+The first `open` leases the run's warm device (the one `simbox sim` printed);
+do not pass `--device`, `--udid` or `--serial`.
 
 ```bash
-simbox exec boot --platform android --device simbox --headless
-simbox exec install /absolute/path/app.apk --platform android --device simbox
-simbox exec open com.example.app --platform android --device simbox
+simbox exec open --platform android        # lease the device
+simbox exec install /absolute/path/app.apk --platform android
+simbox exec open com.example.app --platform android
 simbox exec snapshot -i --platform android
 simbox exec click @e1 --platform android
 simbox exec screenshot /absolute/path/evidence.png --platform android
+simbox exec close --platform android       # release; Simlock wipes the device
 ```
 
-For iOS, use `--platform ios --device "<exact inventory name>"` (or `--udid`
-from the `Booted:` line `simbox sim` prints) and the simulator `.app` build.
+For iOS, open `com.apple.Preferences` first and install the simulator `.app`
+build, not a device IPA.
 Check `agent-device help <command>` when unsure. Take a fresh snapshot after
 navigation; old refs may be invalid. Screenshots are visual evidence, not
 proof of backend behavior. Use `--session <name>` consistently for multiple
@@ -94,7 +97,9 @@ independent device sessions; otherwise Simbox uses a stable run-scoped session.
 - Report platform, run ID, booted device/OS, Actions link, tested behavior,
   evidence paths, and limitations.
   Redact daemon tokens, tunnel credentials, pairing codes, and auth files.
-- Close sessions you created with `simbox exec close --platform <p>`. Use
+- Close sessions you created with `simbox exec close --platform <p>`. Closing
+  releases the lease and Simlock erases the device, so close only when done
+  with its state. Use
   `simbox stop --platform <p>` when finished with a run you own; `--all` stops
   both, so do not use it while another agent uses the other platform. A screenshot
   alone does not establish that pairing, orchestration, or a full flow passed.

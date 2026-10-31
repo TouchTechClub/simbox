@@ -1,7 +1,7 @@
 import { Hono, type Context } from "hono";
 import { eq } from "drizzle-orm";
 import { createDb, schema } from "@simbox/db";
-import { validPreviewDevice, type PreviewInventory } from "@simbox/shared";
+import { leaseInventory, validPreviewDevice, type PreviewInventory } from "@simbox/shared";
 import { requireUser, type AppContext } from "../middleware";
 import type { RunRow } from "../db";
 import { signPreviewTicket, verifyPreviewTicket, bridgePreviewSockets } from "../preview-ticket";
@@ -38,46 +38,46 @@ function available(
     (run.expires_at === null || run.expires_at * 1000 > Date.now())
   );
 }
+/** A path on the run's Simlock daemon, only ever through the run's own named tunnel. */
 function upstreamUrl(run: RunRow, path: string): string {
   const origin = new URL(run.tunnel_url!);
-  // Registered tunnels have a fixed origin; device identifiers never select a host.
   if (
     origin.protocol !== "https:" ||
     origin.username ||
     origin.password ||
     origin.port ||
-    // A quick tunnel, or exactly the named tunnel provisioned for this run.
-    !(
-      /^[a-z0-9-]+\.trycloudflare\.com$/.test(origin.hostname) ||
-      (!!run.tunnel_hostname && origin.hostname === run.tunnel_hostname)
-    )
+    !run.tunnel_hostname ||
+    origin.hostname !== run.tunnel_hostname
   )
     throw new Error("Invalid tunnel");
-  return `${origin.origin}/simbox-preview/${path}`;
+  return `${origin.origin}/v1/${path}`;
 }
-async function inventory(run: RunRow, signal?: AbortSignal): Promise<PreviewInventory> {
-  const response = await fetch(upstreamUrl(run, "devices"), {
-    headers: { authorization: `Bearer ${run.daemon_token}` },
+const upstreamHeaders = (run: RunRow) => ({
+  authorization: `Bearer ${run.daemon_token}`,
+  // Cloudflare's Browser Integrity Check refuses some default user agents.
+  "user-agent": "simbox-api/1",
+});
+async function simlockJson(run: RunRow, path: string, signal?: AbortSignal): Promise<unknown> {
+  const response = await fetch(upstreamUrl(run, path), {
+    headers: upstreamHeaders(run),
     redirect: "manual",
     signal: signal
-      ? AbortSignal.any([signal, AbortSignal.timeout(300_000)])
-      : AbortSignal.timeout(300_000),
+      ? AbortSignal.any([signal, AbortSignal.timeout(30_000)])
+      : AbortSignal.timeout(30_000),
   });
   if (!response.ok) {
     await response.body?.cancel();
-    throw new Error(
-      "Preview hub unavailable. Older agents need a new run after upgrading; first access may take a few minutes to install the hub.",
-    );
+    throw new Error(`Simlock answered ${response.status}`);
   }
-  const result: PreviewInventory = await response.json();
-  if (
-    !Array.isArray(result.devices) ||
-    !result.devices.every(
-      (device) => validPreviewDevice(device.id) && device.platform === run.platform,
-    )
-  )
-    throw new Error("Invalid preview inventory");
-  return result;
+  return response.json();
+}
+/** The run's leased devices; a lease is what can be streamed. */
+async function inventory(run: RunRow, signal?: AbortSignal): Promise<PreviewInventory> {
+  const [leases, devices] = await Promise.all([
+    simlockJson(run, "leases", signal),
+    simlockJson(run, "devices", signal).catch(() => null),
+  ]);
+  return leaseInventory(leases, devices, run.platform);
 }
 
 previewRoutes.get("/v1/runs/:id/preview/devices", requireUser, async (c) => {
@@ -88,7 +88,7 @@ previewRoutes.get("/v1/runs/:id/preview/devices", requireUser, async (c) => {
     return c.json(await inventory(run, c.req.raw.signal), { headers: NO_CACHE });
   } catch {
     return failure(
-      "Device preview unavailable. First access installs the hub; retry shortly. Older agents require a new run after upgrading.",
+      "Device preview unavailable: the run's Simlock daemon did not answer. Retry shortly.",
       503,
     );
   }
@@ -139,26 +139,14 @@ previewRoutes.get("/v1/runs/:id/preview/socket", async (c) => {
     return failure("The run is no longer live", 409);
   try {
     const upstream = await fetch(
-      upstreamUrl(
-        run,
-        `socket?device=${encodeURIComponent(claims.device)}&platform=${claims.platform}`,
-      ),
-      {
-        headers: {
-          upgrade: "websocket",
-          authorization: `Bearer ${run.daemon_token}`,
-          "x-simbox-preview-control": claims.control ? "1" : "0",
-        },
-        redirect: "manual",
-      },
+      upstreamUrl(run, `leases/${encodeURIComponent(claims.device)}/input`),
+      { headers: { ...upstreamHeaders(run), upgrade: "websocket" }, redirect: "manual" },
     );
     if (upstream.status !== 101 || !upstream.webSocket) {
       await upstream.body?.cancel();
       return failure(
-        upstream.status === 409
-          ? "Device already has a browser controller"
-          : "Preview socket unavailable",
-        upstream.status === 409 ? 409 : 502,
+        upstream.status === 404 ? "The device's lease has ended" : "Preview socket unavailable",
+        upstream.status === 404 ? 409 : 502,
       );
     }
     const pair = new WebSocketPair();
@@ -175,37 +163,33 @@ previewRoutes.get("/v1/runs/:id/preview/socket", async (c) => {
   }
 });
 
-for (const format of ["video", "mjpeg"] as const) {
-  previewRoutes.get(`/v1/runs/:id/preview/${format}`, requireUser, async (c) => {
-    const device = c.req.query("device");
-    if (!validPreviewDevice(device)) return failure("Invalid device", 400);
-    const run = await ownedRun(c, c.get("user").id, c.req.param("id"));
-    if (!run) return failure("Run not found", 404);
-    if (!available(run) || run.platform !== "ios") return failure("iOS live run required", 409);
-    try {
-      if (!(await inventory(run, c.req.raw.signal)).devices.some((item) => item.id === device))
-        return failure("Device is no longer active", 409);
-      const response = await fetch(
-        upstreamUrl(run, `${format}?platform=ios&device=${encodeURIComponent(device)}`),
-        {
-          headers: { authorization: `Bearer ${run.daemon_token}` },
-          redirect: "manual",
-          signal: c.req.raw.signal,
-        },
-      );
-      if (!response.ok || !response.body) {
-        await response.body?.cancel();
-        return failure("Device stream unavailable", 502);
-      }
-      return new Response(response.body, {
-        headers: {
-          ...NO_CACHE,
-          "content-type": response.headers.get("content-type") ?? "application/octet-stream",
-          "x-accel-buffering": "no",
-        },
-      });
-    } catch {
+// The lease's H.264 stream (`[u32 len][u8 tag]` frames), on both platforms.
+previewRoutes.get("/v1/runs/:id/preview/video", requireUser, async (c) => {
+  const device = c.req.query("device");
+  if (!validPreviewDevice(device)) return failure("Invalid device", 400);
+  const run = await ownedRun(c, c.get("user").id, c.req.param("id"));
+  if (!run) return failure("Run not found", 404);
+  if (!available(run)) return failure("The run is not live", 409);
+  try {
+    if (!(await inventory(run, c.req.raw.signal)).devices.some((item) => item.id === device))
+      return failure("Device is no longer active", 409);
+    const response = await fetch(upstreamUrl(run, `leases/${encodeURIComponent(device)}/stream`), {
+      headers: upstreamHeaders(run),
+      redirect: "manual",
+      signal: c.req.raw.signal,
+    });
+    if (!response.ok || !response.body) {
+      await response.body?.cancel();
       return failure("Device stream unavailable", 502);
     }
-  });
-}
+    return new Response(response.body, {
+      headers: {
+        ...NO_CACHE,
+        "content-type": response.headers.get("content-type") ?? "application/octet-stream",
+        "x-accel-buffering": "no",
+      },
+    });
+  } catch {
+    return failure("Device stream unavailable", 502);
+  }
+});

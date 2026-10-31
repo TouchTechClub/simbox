@@ -1,4 +1,11 @@
-import { PREVIEW_SESSION_MS, validPreviewDevice, type DevicePlatform } from "@simbox/shared";
+import {
+  PREVIEW_MAX_MESSAGE,
+  PREVIEW_SESSION_MS,
+  parsePreviewInput,
+  simlockInput,
+  validPreviewDevice,
+  type DevicePlatform,
+} from "@simbox/shared";
 import { base64ToBytes, bytesToBase64Url } from "./util";
 
 export interface PreviewTicket {
@@ -80,7 +87,13 @@ export async function verifyPreviewTicket(
   }
 }
 
-/** Workers terminates both halves after a bounded viewing lease. No input replay. */
+/**
+ * Bridge the panel's socket to the lease's Simlock input socket. The panel
+ * speaks JSON (`PreviewInput`); Simlock speaks tagged binary. Read-only
+ * viewers send nothing upstream. Upstream, only the admitted (`0x83`) and
+ * screen config (`0x82`) messages reach the panel. Workers terminates both
+ * halves after a bounded viewing lease. No input replay.
+ */
 export function bridgePreviewSockets(
   client: WebSocket,
   upstream: WebSocket,
@@ -106,30 +119,29 @@ export function bridgePreviewSockets(
   );
   client.addEventListener("message", (event) => {
     try {
-      if (typeof event.data !== "string" || event.data.length > 16_384) {
+      if (typeof event.data !== "string" || event.data.length > PREVIEW_MAX_MESSAGE) {
         close(1008, "Invalid input");
         return;
       }
-      const input = JSON.parse(event.data);
-      if (!control && input.type !== "reset-video") {
+      const input = parsePreviewInput(JSON.parse(event.data));
+      // Simlock's stream restarts on its own; nothing to reset upstream.
+      if (input.type === "reset-video") return;
+      if (!control) {
         close(1008, "Read-only preview");
         return;
       }
-      upstream.send(event.data);
+      const message = simlockInput(input);
+      if (message) upstream.send(message);
     } catch {
       close(1008, "Invalid input");
     }
   });
   upstream.addEventListener("message", (event) => {
     try {
-      if (
-        (typeof event.data === "string" ? event.data.length : event.data.byteLength) >
-        4 * 1024 * 1024
-      ) {
-        close(1009, "Oversized frame");
-        return;
-      }
-      client.send(event.data);
+      if (typeof event.data === "string") return;
+      const bytes = new Uint8Array(event.data as ArrayBuffer);
+      if (bytes[0] === 0x83) client.send(JSON.stringify({ type: "ready", control }));
+      else if (bytes[0] === 0x82 && bytes.byteLength <= PREVIEW_MAX_MESSAGE) client.send(bytes);
     } catch {
       close();
     }

@@ -321,6 +321,10 @@ com.apple.Preferences`, then `snapshot`), not just boot the device.
   `--remote-config`; an agent token gets 403 on `/v1/devices`, so preview names leases from the
   run's booted device; the first iOS `snapshot` on a fresh lease took 164s, past `snapshot`'s 90s
   default client budget, so the self-test passes `--timeout`.
+- **iOS boots on hosted Macs outlast Simlock's limits.** Four of five runs never warmed: boots took
+  134s+ against Simlock's fixed 120s, and `simctl list` outlasted 30s. A priming boot did not help
+  (every boot is slow, not just the first). The runner patches those constants in the pinned build
+  (`SIMLOCK_PATCHES`) and enables slim mode on iOS 18.5+. Ask upstream to make them configurable.
 - **Lease TTL is fixed at 5 minutes** by agent-device's proxy lease client (0.21.35); each command
   renews it. An idle session loses its device and Simlock wipes it. Raise upstream.
 - **`agent-device devices` is refused by Simlock's front**; `simbox devices list` covers it.

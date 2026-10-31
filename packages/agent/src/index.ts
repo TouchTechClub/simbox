@@ -661,7 +661,11 @@ async function main(): Promise<void> {
   };
   // Simlock's own capacity bounds the devices; this only stops one token
   // (all of the owner's clients) from being refused a second lease.
-  await simlock.configure({ target, maxDevices: state.maxDevices ?? MAX_DEVICES_PER_RUN });
+  await simlock.configure({
+    target,
+    maxDevices: state.maxDevices ?? MAX_DEVICES_PER_RUN,
+    osVersion: choice.os.version,
+  });
   await simlock.start();
   info("Simlock daemon started on 127.0.0.1:4701");
 

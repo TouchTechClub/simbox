@@ -2,7 +2,7 @@ import { compareVersions } from "@simbox/shared";
 import type { CatalogModel, DeviceCatalog } from "@simbox/shared";
 import { run } from "./proc.js";
 import { info, warn } from "./log.js";
-import { pickOrThrow, type DeviceChoice, type PlatformAdapter } from "./platform.js";
+import { pickOrThrow, type PlatformAdapter } from "./platform.js";
 import {
   installedXcodeVersions,
   isFoldableType,
@@ -38,40 +38,6 @@ export async function raisePriority(pid: number, name: string): Promise<void> {
   });
   if (result.code !== 0)
     warn(`could not raise ${name} priority: ${result.stderr.trim().slice(0, 200)}`);
-}
-
-/** How long the priming boot may take; GitHub's macOS images have taken minutes. */
-const PRIME_BOOT_TIMEOUT_MS = 10 * 60_000;
-
-/**
- * Boot, then delete, a throwaway simulator of the chosen model and runtime.
- * A runtime's first boot on a fresh host is the slow one, and it outlasts
- * Simlock's fixed 120s boot limit on hosted Macs (three timeouts in 15 minutes
- * in testing). Best effort: Simlock still boots its own device either way.
- */
-export async function primeSimulator(choice: DeviceChoice): Promise<void> {
-  const started = Date.now();
-  const { runtimes } = await simctlJson<{ runtimes: Runtime[] }>(["runtimes"]);
-  const runtime = runtimes.find((r) => isIOSRuntime(r) && r.version === choice.os.version);
-  if (!runtime) return warn(`no iOS ${choice.os.version} runtime to prime`);
-  const created = await run(
-    ["xcrun", "simctl", "create", "simbox-prime", choice.model.id, runtime.identifier],
-    { timeoutMs: 120_000 },
-  );
-  const udid = created.stdout.trim();
-  if (created.code !== 0 || !udid)
-    return warn(`could not create a priming simulator: ${created.stderr.trim().slice(-300)}`);
-  try {
-    const booted = await run(["xcrun", "simctl", "bootstatus", udid, "-b"], {
-      timeoutMs: PRIME_BOOT_TIMEOUT_MS,
-    });
-    if (booted.code === 0)
-      info(`iOS ${choice.os.version} primed in ${Math.round((Date.now() - started) / 1000)}s`);
-    else warn(`priming simulator did not boot (exit ${booted.code}); continuing`);
-  } finally {
-    await run(["xcrun", "simctl", "shutdown", udid], { timeoutMs: 120_000 });
-    await run(["xcrun", "simctl", "delete", udid], { timeoutMs: 120_000 });
-  }
 }
 
 /**
@@ -156,7 +122,7 @@ export function createIOSAdapter(): PlatformAdapter {
       info(`device: ${model.name} on iOS ${os.version}`);
       return { model, os, catalog: offered };
     },
-    prepare: primeSimulator,
+    async prepare() {},
     // Simlock names iOS models by their simctl device type name.
     simlockModel: (choice) => choice.model.name,
   };

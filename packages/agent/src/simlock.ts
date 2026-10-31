@@ -4,11 +4,11 @@
  * installs it, configures one warm target, waits for it, mints the agent
  * token clients use, and reads its status for heartbeats and idle exit.
  */
-import { chmod, readdir } from "node:fs/promises";
+import { chmod, readdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { DevicePlatform } from "@simbox/shared";
+import { compareVersions, type DevicePlatform } from "@simbox/shared";
 import { PINS } from "./pins.js";
 import { endGroup, info, relay, startGroup, warn } from "./log.js";
 import { relayFiltered, run, which } from "./proc.js";
@@ -74,6 +74,7 @@ export async function installSimlock(): Promise<SimlockBins> {
     if (res.code !== 0) throw new Error(`npm i -g ${specs.join(" ")} exited ${res.code}`);
     const prefix = (await run(["npm", "prefix", "-g"])).stdout.trim();
     const root = (await run(["npm", "root", "-g"])).stdout.trim();
+    await patchSimlock(join(root, "simlock", "dist"));
     const helpers = join(root, "simlock", "dist", "bin");
     for (const name of await readdir(helpers).catch(() => [] as string[]))
       await chmod(join(helpers, name), 0o755).catch(() => {});
@@ -88,10 +89,56 @@ export async function installSimlock(): Promise<SimlockBins> {
   }
 }
 
+/**
+ * Simlock 0.4.0 hard-codes iOS timeouts that hosted Macs (3 vCPUs) cannot
+ * meet: in testing, a boot took 134s against a 120s limit and `simctl list`
+ * outlasted 30s, so most runs never warmed. Raise them in the pinned build
+ * until Simlock makes them configurable. Each edit must match exactly, so a
+ * Simlock bump that moves them fails the run instead of silently reverting.
+ */
+export const SIMLOCK_PATCHES: Array<{ file: string; from: string; to: string }> = [
+  {
+    file: "drivers/ios/index.js",
+    from: "const BOOTSTATUS_TIMEOUT_MS = 120_000;",
+    to: "const BOOTSTATUS_TIMEOUT_MS = 600_000;",
+  },
+  {
+    file: "drivers/ios/index.js",
+    from: "const COMMAND_TIMEOUT_MS = 30_000;",
+    to: "const COMMAND_TIMEOUT_MS = 120_000;",
+  },
+  {
+    file: "core/warm-pool/catalog-check.js",
+    from: "const CATALOG_READ_LIMIT_MS = 30_000;",
+    to: "const CATALOG_READ_LIMIT_MS = 120_000;",
+  },
+];
+
+export function patchSource(source: string, from: string, to: string): string {
+  if (source.includes(to)) return source;
+  if (!source.includes(from)) throw new Error(`Simlock patch target not found: ${from}`);
+  return source.replace(from, to);
+}
+
+async function patchSimlock(dist: string): Promise<void> {
+  for (const { file, from, to } of SIMLOCK_PATCHES) {
+    const path = join(dist, file);
+    await writeFile(path, patchSource(await readFile(path, "utf8"), from, to));
+  }
+  info(`patched Simlock's iOS timeouts (${SIMLOCK_PATCHES.length} constants)`);
+}
+
+/** Simlock's slim mode applies from iOS 18.5; older runtimes always boot full. */
+export function iosSlim(osVersion: string): boolean {
+  return compareVersions(osVersion, "18.5") >= 0;
+}
+
 /** Every `simlock config set` the run needs, in order. */
 export function simlockSettings(options: {
   target: WarmTarget;
   maxDevices: number;
+  /** The chosen OS version; decides iOS slim mode. */
+  osVersion: string;
 }): Array<[string, string]> {
   const { target } = options;
   const settings: Array<[string, string]> = [
@@ -110,6 +157,10 @@ export function simlockSettings(options: {
       String(Math.max(1, options.maxDevices) + 1),
     ],
   ];
+  // Slim turns off iOS background services (Siri, search, iCloud sync, widgets
+  // and so on) and boots under its own, configurable limit.
+  if (target.platform === "ios" && iosSlim(options.osVersion))
+    settings.push(["ios.defaultMode", "slim"], ["ios.slim.bootTimeoutMs", "600000"]);
   if (target.platform === "android")
     settings.push(
       ["android.emulator.headless", "true"],
@@ -144,7 +195,7 @@ export function createSimlock(bins: SimlockBins) {
     status,
     logs,
 
-    async configure(options: { target: WarmTarget; maxDevices: number }): Promise<void> {
+    async configure(options: Parameters<typeof simlockSettings>[0]): Promise<void> {
       for (const [key, value] of simlockSettings(options)) {
         const res = await simlock(["config", "set", key, value]);
         if (res.code !== 0)

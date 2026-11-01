@@ -148,7 +148,9 @@ async function patchSimlock(dist: string): Promise<void> {
     const path = join(dist, file);
     await writeFile(path, patchSource(await readFile(path, "utf8"), from, to));
   }
-  info(`patched Simlock: iOS timeouts, agent-device lease TTL and devices (${SIMLOCK_PATCHES.length} edits)`);
+  info(
+    `patched Simlock: iOS timeouts, agent-device lease TTL and devices (${SIMLOCK_PATCHES.length} edits)`,
+  );
 }
 
 /** Simlock's slim mode applies from iOS 18.5; older runtimes always boot full. */

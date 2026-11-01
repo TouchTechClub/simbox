@@ -91,9 +91,7 @@ export function connectFlow(
     `  This run (${info.runId}) is reserved for this agent; other agents get their own. SIMBOX_RUN=${info.runId} pins a shell to it.\n`,
   );
   out.write("  exec supplies auth and allows 5 minutes for a cold boot.\n\n");
-  out.write(
-    `  A lease idle for 30 minutes expires and Simlock erases the device.\n\n`,
-  );
+  out.write(`  A lease idle for 30 minutes expires and Simlock erases the device.\n\n`);
   out.write(pc.dim("  manual connect (the profile holds the run's token):\n"));
   out.write(
     `  ${pc.cyan(`agent-device connect --remote-config ${writeRemoteProfile(info)} --session ${session}`)}\n`,

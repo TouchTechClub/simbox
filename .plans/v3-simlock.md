@@ -340,5 +340,16 @@ com.apple.Preferences`, then `snapshot`), not just boot the device.
   its input socket always reports `portrait` (`drivers/ios/input/device-input.js`), so a rotated
   iOS app shows sideways (taps still land on what is shown). Needs Simlock to report the
   orientation; raise upstream. The panel's own rotation mapping is then unverified in direction.
-- **Still unverified:** the iPhone Duo foldable through Simlock; `simbox sim` ensure through the
+- **iPhone Duo (iOS 27.1, `xcode-27`), verified 2026-11-01.** Warm in 238-366s; the self-test's
+  first `snapshot` took over 270s twice (its XCTest build on a loaded host), so the warm-up gives it
+  15 minutes and a retry first releases every lease (a timed-out `close` left the lease held, and
+  the retry waited on `running-limit`). Passing run: warm 238s, self-test 4m20s, re-warm 246s, live
+  13 minutes after dispatch. `open` 32s, `fold closed` (466x678 pt) and `fold open` (669x951 pt)
+  with matching screenshots. Simlock's slim discovery fails on the 27.1 runtime (`dyld`, exit 134)
+  and logs `Skipped iOS device slim`; the device still warms, so it is noise. Raise upstream.
+- **Stopping a run deletes its tunnel at once,** so the agent's edge probe saw 530 before its next
+  heartbeat said to stop, restarted cloudflared against a deleted tunnel and exited 1. The agent now
+  heartbeats before treating a 530 as a dead connection. Separately, the first 4 minutes after that
+  run went live served 502/524 until cloudflared reconnected on its own; `open` then worked.
+- **Still unverified:** `simbox sim` ensure through the
   real API and GitHub App; several devices on one run; Blacksmith runners.

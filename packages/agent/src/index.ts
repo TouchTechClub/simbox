@@ -509,6 +509,9 @@ async function supervise(): Promise<never> {
       const failure = await restartTunnel();
       if (failure) await shutdown(failure, 1);
     } else if (await tunnelEdgeDead()) {
+      // Ending a run deletes its tunnel, so the edge serves 530 before the
+      // next heartbeat says to stop. Ask first; a run that is over exits here.
+      await heartbeat();
       warn("tunnel unreachable at edge; waiting for cloudflared to reconnect");
       if (await tunnelStaysDead()) {
         warn("killing zombie cloudflared to force reconnect");

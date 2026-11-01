@@ -53,7 +53,7 @@ if the tunnel restarts, and separate for each agent sharing the run.
 consistently to each command. A run leases at most `maxDevices` devices at once. Simbox never automatically replays device actions
 after a transport failure: inspect with `simbox exec session list` first. Only
 read-only or absolute commands (`devices`, `snapshot`, `screenshot`, `fold`,
-`session`, `appstate`, `apps`, `get`, `is`) are retried, up to twice, when the
+`orientation`, `session`, `appstate`, `apps`, `get`, `is`) are retried, up to twice, when the
 tunnel drops.
 
 Each command renews the session's lease. agent-device fixes that lease at five

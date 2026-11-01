@@ -197,7 +197,7 @@ iOS 26.2–26.5; `ubuntu-latest`: 4 vCPU, 16 GB, KVM).
 - Ask upstream for a configurable full-mode boot timeout. Evaluate `ios.defaultMode slim`.
 - `simbox sim` waits for a warm device of the platform, not just a connected worker.
 
-### S2 Gateway host: partly done locally; the Cloudflare part still needs a real deploy
+### S2 Gateway host: superseded by S4 (no gateway)
 
 - **Token persistence works.** The sidecar snapshots only `state.db`, which holds tokens and
   worker pairing (about 49 KB base64), using `node:sqlite` `backup()`. A brand-new container
@@ -210,12 +210,8 @@ iOS 26.2–26.5; `ubuntu-latest`: 4 vCPU, 16 GB, KVM).
 - **Local `wrangler dev` isn't possible on this arm64 box.** Wrangler hard-codes `linux/amd64`
   image builds, npm segfaults under QEMU, and amd64 Node under QEMU hangs. Spike code:
   `/tmp/spike/cf` (Worker + `GatewayHost` DO + sidecar).
-- **Still unverified, needs a real Cloudflare deploy:**
-  - Worker → DO → container passing WebSocket `/v1/uplink` for more than 1h.
-  - An idle response longer than 100s (agent-device `open`).
-  - Small streamed bodies not being buffered. Through the quick tunnel, the low-bitrate iOS stream
-    delivered **0 bytes in 75s** while the same stream fetched directly gave 35 KB in 40s.
-  - Cold start time and container sleep.
+- The Cloudflare-side questions (WebSocket uplink through a DO, container sleep) are moot without
+  a gateway. The quick-tunnel stream buffering seen here does not happen on a named tunnel (S4).
 
 ### S3 Stream: answered
 

@@ -445,6 +445,7 @@ describe("remote commands", () => {
     const dropped = "Error (COMMAND_FAILED): Remote daemon is unavailable";
     expect(shouldReplay(["devices", "--platform", "ios"], 1, dropped)).toBe(true);
     expect(shouldReplay(["fold", "closed"], 1, "Daemon request timed out")).toBe(true);
+    expect(shouldReplay(["orientation", "landscape-left"], 1, "fetch failed")).toBe(true);
     expect(shouldReplay(["snapshot", "-i"], 1, "Failed to read daemon response")).toBe(true);
     // Actions may already have run on the device: never replay them.
     for (const command of ["click", "type", "fill", "install", "open", "press"])

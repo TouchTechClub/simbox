@@ -161,7 +161,7 @@ simbox exec fold closed      # or half-open / open
   Folding commits the device state apps observe (Jetpack WindowManager posture
   and hinge angle), but this profile has no separate cover display, so
   screenshots stay 1768x2208 in every pose.
-- `fold` needs agent-device 0.21.35 on the client on the client and an open session.
+- `fold` needs agent-device 0.21.35 on the client and an open session.
   It reads the hinge angle back after each pose. On the busy xcode-27 image
   devicectl sometimes answers "no display table" or times out; setting a pose
   is idempotent, so retry it.

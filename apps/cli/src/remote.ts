@@ -42,7 +42,8 @@ export function remoteArgs(
 }
 
 /**
- * Commands that only read state or set it to an absolute value (a fold pose).
+ * Commands that only read state or set it to an absolute value (a fold pose,
+ * an orientation).
  * Replaying one after a dropped tunnel is harmless; taps, typing, installs and
  * opens are never replayed.
  */
@@ -51,6 +52,7 @@ const REPLAY_SAFE = new Set([
   "snapshot",
   "screenshot",
   "fold",
+  "orientation",
   "session",
   "appstate",
   "apps",

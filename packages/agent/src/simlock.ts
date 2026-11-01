@@ -105,6 +105,9 @@ export const AGENT_DEVICE_LEASE_TTL_MS = 30 * 60_000;
  *   wipes it. The client runs on the user's machine, so the runner overrides
  *   it in Simlock's agent-device front: there the configured
  *   `leaseTtlCapMs` becomes the TTL instead of only capping the client's.
+ * - agent-device asks for streamed progress on `devices` unless `--json` is
+ *   set, which the front refuses because it filters the answer to the token's
+ *   own devices. Drop the request instead; the client reads a plain reply.
  */
 export const SIMLOCK_PATCHES: Array<{ file: string; from: string; to: string }> = [
   {
@@ -127,6 +130,11 @@ export const SIMLOCK_PATCHES: Array<{ file: string; from: string; to: string }> 
     from: "return Math.max(cap === undefined ? sent : Math.min(sent, cap), MIN_TTL_MS);",
     to: "return Math.max(cap === undefined ? sent : cap, MIN_TTL_MS);",
   },
+  {
+    file: "agent-device/front/request-rules.js",
+    from: 'throw refuse("refused: devices does not stream through simlock");',
+    to: 'delete check.meta["requestProgress"]; check.changed = true;',
+  },
 ];
 
 export function patchSource(source: string, from: string, to: string): string {
@@ -140,7 +148,7 @@ async function patchSimlock(dist: string): Promise<void> {
     const path = join(dist, file);
     await writeFile(path, patchSource(await readFile(path, "utf8"), from, to));
   }
-  info(`patched Simlock: iOS timeouts, agent-device lease TTL (${SIMLOCK_PATCHES.length} edits)`);
+  info(`patched Simlock: iOS timeouts, agent-device lease TTL and devices (${SIMLOCK_PATCHES.length} edits)`);
 }
 
 /** Simlock's slim mode applies from iOS 18.5; older runtimes always boot full. */

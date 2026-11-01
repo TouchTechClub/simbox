@@ -107,7 +107,7 @@ Create a token (CF dashboard → My Profile → API Tokens → Create Custom Tok
 - Account › **Cloudflare Tunnel: Edit**
 - Zone › **Zone: Read** and **DNS: Edit**, limited to the `TUNNEL_ZONE` zone
 
-Save it as the `CLOUDFLARE_TUNNEL_API_TOKEN` secret and redeploy. Without that secret the deploy passes `CLOUDFLARE_API_TOKEN` instead (it currently carries these permissions too), so the worker then holds the deploy token; a dedicated token keeps the worker to tunnel and DNS access only. If neither token can provision, `/v1/runs/tunnel` fails and runners keep using quick tunnels. The API deletes a run's tunnel and DNS record when the agent deregisters; a 10-minute cron also releases ended or expired runs and deletes `simbox-run-*` tunnels and `simbox run` DNS records with no live run.
+Save it as the `CLOUDFLARE_TUNNEL_API_TOKEN` secret and redeploy. Without that secret the deploy passes `CLOUDFLARE_API_TOKEN` instead (it currently carries these permissions too), so the worker then holds the deploy token; a dedicated token keeps the worker to tunnel and DNS access only. If neither token can provision, `/v1/runs/tunnel` fails and runners stop before going live. The API deletes a run's tunnel and DNS record when the agent deregisters; a 10-minute cron also releases ended or expired runs and deletes `simbox-run-*` tunnels and `simbox run` DNS records with no live run.
 
 To move zones, set the `TUNNEL_ZONE` variable and redeploy. S5 Code accepts `r-<16 hex>` under `simboxtouchtech.dpdns.org` and `simbox.dpdns.org` (see S5's `SimboxDeviceHost.ts`).
 
@@ -123,11 +123,14 @@ npm publish --access public     # first publish of @touchtechclub/simbox must be
 CLI defaults to `PROD_API_URL`; users can override via `SIMBOX_API_URL` / `SIMBOX_WEB_URL` env.
 
 Use `simbox exec <agent-device command>` for device operations. It injects the
-per-run daemon token, resolves the latest tunnel on each command, and uses a
-stable run-scoped session in Simbox's own state directory (without modifying
-agent-device global/proxy profiles). Cold startup gets a 300000 ms budget.
-Clients should use `agent-device@0.21.28`, matching the runner pin. Existing
-runs keep the old agent until stopped/recreated after a release.
+run's Simlock agent token, resolves the latest tunnel on each command, and uses
+a stable session per run and agent in Simbox's own state directory (without
+modifying agent-device global/proxy profiles). Cold startup gets a 300000 ms
+budget. Clients should use `agent-device@0.21.35`, matching the runner pin.
+Runners whose agent predates Simlock are refused at registration (409
+`agent_outdated`), and new agents need the API's Simlock tunnel port, so
+release the action and deploy the API together, then run `simbox repair` in
+each repository.
 
 Android testing uses `simbox sim --platform android --new`: the repaired workflow
 dispatches `ubuntu-latest`, grants `/dev/kvm` access, and downloads the sha256-pinned
@@ -137,7 +140,7 @@ keeps its own run. The `concurrent_runs` migration must be applied before the AP
 that uses it deploys, and before releasing the CLI/agent. Run `simbox repair`
 after upgrading to install the current workflow (`platform`, `runner_labels` and
 `simbox_run` inputs, staged steps); older workflows run one platform at a time.
-Android readiness requires `sys.boot_completed=1`, not merely AVD creation.
+A run is ready once Simlock reports a warm device and the agent's self-test passed.
 
 ---
 

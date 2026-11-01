@@ -1,56 +1,19 @@
 /**
- * Provisioning: install agent-device via npm and download pinned cloudflared.
- * Device preparation lives in the platform adapters (ios.ts, android.ts).
+ * Provisioning: download pinned cloudflared. Simlock and agent-device are
+ * installed by simlock.ts; device preparation lives in ios.ts and android.ts.
  */
 import { chmod, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PINS } from "./pins.js";
-import { endGroup, info, relay, startGroup } from "./log.js";
-import { run, which } from "./proc.js";
+import { endGroup, info, startGroup } from "./log.js";
+import { run } from "./proc.js";
 
 /** Directory the agent uses for downloaded binaries. */
 export function binDir(): string {
   const base = Bun.env.RUNNER_TEMP ?? join(tmpdir(), "simbox");
   return join(base, "simbox-bin");
-}
-
-/**
- * `npm i -g agent-device@<pin>` — Node/npm exist in the macOS runner toolcache.
- * Returns the resolved path to the agent-device binary.
- */
-export async function installAgentDevice(): Promise<string> {
-  startGroup("Install agent-device");
-  try {
-    const spec = `agent-device@${PINS.agentDevice}`;
-    info(`npm i -g ${spec}`);
-    const res = await run(["npm", "i", "-g", spec], { timeoutMs: 240_000 });
-    for (const l of res.stdout.split("\n")) {
-      if (l.trim()) relay("npm", l);
-    }
-    for (const l of res.stderr.split("\n")) {
-      if (l.trim()) relay("npm", l);
-    }
-    if (res.code !== 0) throw new Error(`npm i -g ${spec} exited ${res.code}`);
-
-    // Resolve the binary: PATH first, then the global npm prefix (global
-    // installs can land outside PATH on some runner images).
-    const onPath = await which("agent-device");
-    if (onPath) {
-      info(`agent-device at ${onPath}`);
-      return onPath;
-    }
-    const prefix = await run(["npm", "prefix", "-g"]);
-    const guess = join(prefix.stdout.trim(), "bin", "agent-device");
-    if (existsSync(guess)) {
-      info(`agent-device at ${guess}`);
-      return guess;
-    }
-    throw new Error("agent-device installed but binary not found on PATH or npm prefix");
-  } finally {
-    endGroup();
-  }
 }
 
 interface CloudflaredAsset {

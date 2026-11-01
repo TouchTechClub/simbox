@@ -6,8 +6,11 @@ export const REPO_SECRET_NAME = "SIMBOX_TOKEN";
 /** Path of the workflow file we commit to the user's repo. */
 export const WORKFLOW_PATH = ".github/workflows/simbox.yml";
 
-/** Local port the agent-device proxy binds on the runner (localhost only). */
-export const PROXY_PORT = 4310;
+/**
+ * Local port of the runner's standalone Simlock daemon (localhost only); the
+ * run's named tunnel points here. Simlock's default for a standalone worker.
+ */
+export const SIMLOCK_PORT = 4701;
 
 /** Agent-runner lifecycle, in minutes. */
 export const IDLE_EXIT_MINUTES = 15;

@@ -1,0 +1,355 @@
+# v3: Simlock under the hood
+
+Status: **in progress** on `refactor/use-simlock-leasing`. The architecture is settled (no gateway,
+spike S4). The defaults taken for D2–D4 are listed under [Decisions](#decisions).
+
+## Goal
+
+Stop maintaining our own device stack. [Simlock](https://incubator.callstack.com/simlock/)
+(Callstack, MIT, pinned at `simlock@0.4.0`) does device creation and boot, the warm pool, leasing
+and the queue, wiping between agents, the agent-device proxy, and screen streaming and input.
+Simbox keeps four jobs:
+
+1. **Auth.** GitHub sign-in, CLI login, the repo's `SIMBOX_TOKEN`, and handing each run's Simlock
+   agent token to that run's owner only.
+2. **The common entry point.** One API and dashboard for every user. It lists the user's runs and
+   proxies the dashboard's live view. It is not a Simlock gateway.
+3. **Dashboard.** Repo connection, runner, device and workflow settings, runs, and live devices.
+4. **Running GitHub Actions.** Committing the workflow, managing `SIMBOX_TOKEN`, dispatching runs,
+   per-run named tunnels, and cleaning up runs.
+
+## Why there is no Simlock gateway
+
+A Simlock gateway is single-tenant: an agent token is shell access to whichever worker holds its
+lease, and the gateway gets operator rights on every worker that joins it. A shared gateway would
+let user A's agent land on user B's runner, which holds B's checkout and secrets. So it would have
+to be one gateway per user. That needs hosting: Cloudflare Containers need the Workers Paid plan,
+which we do not have, and a VPS is one more thing to run.
+
+Spike S4 showed we need neither. **Each GitHub run is its own standalone Simlock daemon**, reached
+through the per-run named tunnel we already provision. The tenant boundary is the run: its agent
+token only opens that run's daemon, and only the run's owner ever receives it.
+
+## Target architecture
+
+```
+ simbox CLI / agent ──(1) ensure/list runs ─────────────▶ API Worker (D1, KV, GitHub App)
+        │                                                     │  (2) workflow_dispatch
+        │                                                     ▼
+        │                                              GitHub Actions run
+        │                                     ┌───────────────────────────────────┐
+        └──(3) agent-device / HTTP leases ───▶│ cloudflared (named tunnel, http2) │
+          https://r-<hex>.<zone>/v1/…         │      ▼ 127.0.0.1:4701             │
+                                              │ simlock daemon (standalone)       │
+ dashboard ──▶ API Worker /v1/runs/:id/live/* │   warm pool, leases, stream/input │
+          (proxied with the run's token) ────▶│ simbox-agent: supervise+heartbeat │
+                                              └───────────────────────────────────┘
+```
+
+1. The CLI asks the API for a run of the platform (`POST /v1/runs/ensure`). The API reuses a live
+   run with a free device or dispatches a new one, exactly as today.
+2. The runner's agent installs Simlock, warms one device, mints a Simlock **agent** token, opens
+   the run's named tunnel and registers `{tunnelUrl, daemonToken}` with the API.
+3. The CLI connects agent-device to `https://<run>/v1/agent-device` with that token. Simlock leases
+   a device per agent-device session, and frees and wipes it on `close` or lease expiry.
+
+### Runner (`packages/agent`, `simbox-agent`)
+
+The `start` step, in order (all before the run is announced live):
+
+1. Host checks and API config (platform, requested device, run id, `maxDevices`).
+2. **iOS:** Spotlight off, select Xcode (the requested one, else the newest release), and validate
+   the requested model and OS against the runner's catalog. **Android:** AVD/SDK dirs, accept
+   licenses, install `emulator`, `platform-tools` and the chosen system image (Simlock only warms
+   targets whose image is installed), and validate the model.
+3. `npm i -g simlock@<pin> agent-device@<pin>`, then `chmod +x "$(npm root -g)"/simlock/dist/bin/*`
+   (0.4.0 ships the capture binaries without the exec bit).
+4. Write `~/.simlock/config.json`: capabilities `agent-device`, `stream` and `input` on; one warm
+   target `{platform, model, osVersion?, count: 1}`; `lease.maxPerRequester = maxDevices` (every
+   client of a run shares one agent token, which Simlock counts as one requester); Android
+   emulator headless with no audio, licenses accepted.
+5. `simlock daemon start`, then poll `simlock status --json` until the warm target is ready. Fail the
+   run after the warm-up deadline or repeated boot failures.
+6. Self-test and warm-up through the local profile (`agent-device connect --remote-config
+~/.simlock/agent-device-profile.json`): `open` (iOS: `com.apple.Preferences`), `snapshot`, `close`.
+   On iOS this also builds the XCTest runner, so no client call later waits on the 90s build.
+7. `simlock token create --role agent --label simbox-run-<id>`; the secret is masked in logs.
+8. Stage `ready`; the `serve` step says `go`.
+9. Named tunnel from `POST /v1/runs/tunnel` (ingress `http://127.0.0.1:4701`), cloudflared with
+   `--protocol http2` at raised priority; wait for authoritative DNS; register.
+10. Supervise: the daemon and cloudflared are alive, the edge answers `/v1/healthz`, heartbeat every
+    60s with `activeDevices` = Simlock leases and `devicesReady` = warm devices ready. Idle exit
+    after 15 minutes with no leases and no queued requests; hard exit before the job limit. On
+    exit: deregister, `simlock daemon stop`, stop cloudflared.
+
+Deleted from the agent: the agent-device proxy and our gateway, the preview gateway, the
+device hub, our own device boot and recovery, the quick-tunnel fallback and the device counting.
+
+### API (`apps/api`)
+
+- **Kept:** auth, repos and installations, workflow commits, `SIMBOX_TOKEN`, dispatch, run lifecycle
+  and webhooks, named tunnels and the sweep cron, holders and `ensure` (picking a run is our queue:
+  one hosted run is about one device).
+- **Changed:** tunnel ingress port `4310` → `SIMLOCK_PORT` (`4701`). `register` requires
+  `versions.simlock`; an older agent gets a 409 telling the user to run `simbox repair` (new
+  action release). `daemon_token` now holds the Simlock agent secret. Quick tunnels are gone, so
+  `register` only accepts the run's own named-tunnel hostname.
+- **Live view:** the old preview routes become a thin proxy to the run's daemon, using the run's
+  token (browsers cannot send `Authorization` on WebSockets, and Simlock sends no CORS headers):
+  - `GET /v1/runs/:id/preview/devices` → `GET /v1/leases` (each active lease is a viewable device).
+  - `POST /v1/runs/:id/preview/access` → short ticket bound to user, run, lease and control mode.
+  - `GET /v1/runs/:id/preview/video?device=<lease>` → `GET /v1/leases/:lease/stream`.
+  - `WS /v1/runs/:id/preview/socket?ticket=` → `WS /v1/leases/:lease/input`. The Worker translates
+    the panel's JSON input to Simlock's binary messages (`0x03` touch, `0x04` button, `0x06` key;
+    Simlock has no rotation or text message) and drops input in read-only mode.
+- **No migration.** The `runs` columns stay; `android_ready` keeps meaning "a warm device is ready".
+
+### CLI (`apps/cli`)
+
+- `simbox sim` is unchanged in shape: ensure, wait for live and a ready device, probe
+  `GET <tunnel>/v1/agent-device/health` with the token, write the cache, then print or run the
+  connect command: `agent-device connect --remote-config <profile> --session simbox-<run>`, where
+  the profile is Simlock's own format (`leaseProvider: proxy`, tenant isolation) for the run.
+- `simbox exec` stays (the skill and S5 use it) but only adds `--remote-config` with that profile. Its retry and
+  caching are unchanged.
+- Every request sends a real `User-Agent` (Cloudflare's Browser Integrity Check blocks some).
+
+### Dashboard (`apps/web`)
+
+The live panel keeps its UI. Video comes from the proxied Simlock stream on both platforms (the
+same `[u32 len][u8 tag]` framing the iOS path already decodes), and input goes over the proxied
+socket. Android no longer gets video over the socket.
+
+## Decisions
+
+- **D1 Gateway:** none (S4). Settled.
+- **D2 Agent interface:** keep `simbox exec` as a thin wrapper, so the skill and S5 keep working.
+  Agents may also call `agent-device` directly after `simbox sim`.
+- **D3 Live devices:** port our panel, with control, through the API proxy.
+- **D4 Compatibility:** hard cutover. The new action release moves `TouchTechClub/runner@v1`, so
+  workflows pick it up on the next dispatch. Old agents are refused at `register` with a clear 409.
+
+## Phases
+
+1. **Shared:** `SIMLOCK_PORT`, pins (`simlock`, `agent-device`), register versions, step texts.
+2. **Agent:** `simlock.ts` (install, config, daemon, status, token, self-test); a new `index.ts`
+   main and supervisor; adapters reduced to select + host prep; delete the old stack.
+3. **Action:** Android `prepare` installs `libpulse0`; release bumps to v0.6.0.
+4. **API:** tunnel port, register check, live-view proxy (replaces preview), delete the old
+   preview plumbing.
+5. **CLI:** `/v1/agent-device` paths, health probe, User-Agent.
+6. **Web:** stream + input through the proxy.
+7. **Tests, docs, skill.** Then a real end-to-end run on both platforms before merging.
+
+## Spike results (2026-10-31, simlock 0.4.0, agent-device 0.21.35)
+
+S1–S3 ran with a gateway on a dev box; S4 is the design we are building. Runs were on
+`SparshKaushik/rb-sim-test` branch `spike/simlock` (`macos-latest`: 3 vCPU, 7 GB, Xcode 26.6,
+iOS 26.2–26.5; `ubuntu-latest`: 4 vCPU, 16 GB, KVM).
+
+### S1 Runner: works, with fixes we must ship
+
+- **Join and startup are fast.** `npm i -g simlock agent-device` takes 4s. iOS joined about 20s
+  after job start; Android about 45s (including the `android-35` image download). Today's runner
+  needs several minutes. Default `resource` capacity gives 1 iOS device on a hosted Mac and
+  1 Android device on `ubuntu-latest`, the same as today's rule.
+- **Both platforms, end to end through the gateway.**
+  - **Leases.** HTTP lease, `exec` (`simctl launch`, `adb shell am start`) and release all work.
+  - **agent-device.** `open`, `snapshot -i`, `press`, `screenshot` and `close` work for both
+    platforms. Warm command latency was 1.5–2.6s (India ↔ US). Leases routed to the right
+    worker, with `warm-hit` and `free-capacity` dispatch.
+  - **Input** works on both platforms (`0x83`, then `0x82` with the screen size).
+  - **Stream** works on Android, 720p at about 80 kbit/s mostly-idle. It works on iOS too, once
+    the binary fix below is applied.
+- **Cold boot times.**
+  - Android Pixel 8: 74s.
+  - iOS iPhone 17: 83s and 110s granted. **2 of 4 cold boots failed with `boot-timeout`**: the
+    full-mode deadline is hard-coded at 120s (`BOOTSTATUS_TIMEOUT_MS`). Only slim mode has a
+    configurable `ios.slim.bootTimeoutMs`.
+  - One cold boot also starved the Mac enough that the **worker's uplink dropped** (reconnected
+    within about 10s). The in-flight lease failed with `WORKER_UNREACHABLE`.
+  - After a release, the wipe and re-boot take 40–50s before the device is warm again. Meanwhile
+    the gateway sends new leases to another worker with a free slot, which means a cold boot.
+- **Upstream bugs and missing pieces we must work around:**
+  1. simlock 0.4.0's npm tarball ships `dist/bin/simlock-screen-capture` and
+     `simlock-device-capture` **without the executable bit**, so the iOS stream fails with
+     `EACCES` and iOS input is unavailable. Workaround: `chmod +x "$(npm root -g)"/simlock/dist/bin/*`.
+     File upstream.
+  2. `ubuntu-24.04` runners lack `libpulse0`, which the emulator needs even with
+     `android.emulator.audio false` (`emulator -version` fails). Install it in `prepare`.
+  3. A worker that fails every provision keeps getting requests: the tie-break picks the lowest
+     worker id, and the gateway does not learn that the worker is broken. The runner must
+     self-test (boot one device) **before** joining, and the API should drain a worker on
+     repeated `PROVISION_FAILED`.
+- **agent-device `open` blocks for the whole boot** (and the first iOS XCTest runner build, about
+  40s). Through Cloudflare's proxy that request failed with **524 at 100s**. The lease still
+  completed on the worker, and the session picked it up on the next `open`.
+- **agent-device sessions:** the session name saved by `connect proxy` beat
+  `AGENT_DEVICE_SESSION`. The CLI and skill must pass `--session` explicitly.
+
+**Plan changes from S1:**
+
+- The runner's `start` step boots the default device (and builds the XCTest runner on iOS)
+  **before joining**. The sequence: start the worker standalone with `warmPool.targets`, wait for
+  `ready`, then set `gateway` and restart the daemon (leases and devices survive a restart). The
+  first lease is then a warm hit, and the 120s cold-boot limit and the uplink starvation stay off
+  the agent's path.
+- Ask upstream for a configurable full-mode boot timeout. Evaluate `ios.defaultMode slim`.
+- `simbox sim` waits for a warm device of the platform, not just a connected worker.
+
+### S2 Gateway host: superseded by S4 (no gateway)
+
+- **Token persistence works.** The sidecar snapshots only `state.db`, which holds tokens and
+  worker pairing (about 49 KB base64), using `node:sqlite` `backup()`. A brand-new container
+  restored from it accepts the same agent token as the same identity.
+  - The snapshot is too big for a container env var (argument list too long). So the sidecar
+    starts first, the DO POSTs `/restore`, and the sidecar then configures and starts the gateway.
+- **Keep-alive.** `@cloudflare/containers` 0.3.7 counts an open proxied WebSocket as an in-flight
+  request, so a connected worker keeps the container awake. WebSockets must be proxied inside the
+  DO (`containerFetch`), not from the Worker.
+- **Local `wrangler dev` isn't possible on this arm64 box.** Wrangler hard-codes `linux/amd64`
+  image builds, npm segfaults under QEMU, and amd64 Node under QEMU hangs. Spike code:
+  `/tmp/spike/cf` (Worker + `GatewayHost` DO + sidecar).
+- The Cloudflare-side questions (WebSocket uplink through a DO, container sleep) are moot without
+  a gateway. The quick-tunnel stream buffering seen here does not happen on a named tunnel (S4).
+
+### S3 Stream: answered
+
+The body is `[u32 BE length][u8 tag][payload]`:
+
+| Tag    | Payload                              |
+| ------ | ------------------------------------ |
+| `0x05` | JSON meta                            |
+| `0x01` | avcC                                 |
+| `0x02` | keyframe (length-prefixed AVCC NALs) |
+| `0x03` | delta                                |
+| `0x04` | seed                                 |
+| `0x06` | keepalive                            |
+| `0x07` | ended                                |
+
+Captured Android and iOS streams parse cleanly. This feeds WebCodecs `VideoDecoder` without
+rewriting anything. Simlock's console reader `ui/src/data/stream.ts` (458 lines, MIT) is the
+reference to port. So D3(a) is cheap.
+
+### S4 No gateway: client → runner's standalone daemon over a named tunnel: works
+
+The question: drop the gateway. Each runner runs a **standalone** simlock daemon (HTTP on, port
+4701, no `gateway` set). Our API only lists runs (URL plus agent token), and the CLI, agents and
+dashboard talk to the run's daemon directly.
+
+The setup:
+
+- One remotely managed named tunnel per platform in `simboxtouchtech.dpdns.org`, set up the way
+  `apps/api/src/tunnels.ts` does it (proxied CNAME, ingress to `http://127.0.0.1:4701`).
+- The runner starts the daemon with `warmPool.targets` (one iPhone 17 or Pixel 8) and waits for
+  `ready 1`. It then mints an agent token (`simlock token create --role agent`) and starts
+  cloudflared.
+- The client ran on this box (India); the runners were in the US. Runs 41199224922 and
+  41200386572 on `rb-sim-test`.
+
+| Check through the tunnel                       | Android                               | iOS                                            |
+| ---------------------------------------------- | ------------------------------------- | ---------------------------------------------- |
+| `GET /v1/healthz`                              | 0.8s                                  | 0.9s                                           |
+| `GET /v1/catalog` (auth); without a token: 401 | 3.9s                                  | 3.5s                                           |
+| Console `/` and its 1 MB JS bundle             | 200                                   | 200                                            |
+| agent-device `open` on a warm device           | 6.9s                                  | 9.1s, or 26s with an app                       |
+| agent-device `snapshot -i` / `screenshot`      | 3.1s / 4.5s                           | 1.5–2.4s / 6s, once the XCTest runner is built |
+| HTTP lease on a warm device                    | granted in 0.3s                       | granted in 2.7s                                |
+| Stream, idle for 75s                           | 469 KB, frame gap p50 0.10s           | 104 KB (about 1.4 KB/s), p50 0.27s, max 9.9s   |
+| Stream while swiping (input socket, 17 swipes) | 1.5 MB in 60s, p50 57ms               | 675 KB in 60s, p50 119ms                       |
+| Input socket                                   | `0x83` and `0x82` in 2.4s, 1005 close | `0x83` and `0x82` in 1.2s, 1005 close          |
+| `DELETE /v1/leases/{id}`                       | 202                                   | 202                                            |
+
+- **The named tunnel does not buffer the stream.** Tiny idle 10-second bins, down to a single
+  10-byte keepalive, arrived on time. The low-bitrate iOS stream flowed. The 0-byte result in S2
+  was the quick tunnel.
+- **The 524 stays off the agent's path once a device is warm.** Every call was well under 100s.
+  The one call that would have broken it was the first iOS `snapshot` while the XCTest runner
+  was still building. It failed at agent-device's own 90s client timeout, and the next `open`
+  took 26s. **So the runner's warm-up must also build the XCTest runner** (`open
+com.apple.Preferences`, then `snapshot`), not just boot the device.
+- **Cloudflare Browser Integrity Check** answers 403 (error 1010) to the `Python-urllib`
+  User-Agent. agent-device, Node `fetch`/`WebSocket` and curl pass. Our CLI must send a real UA.
+- **iOS on hosted Macs is the real risk, not the tunnel.**
+  - In the first run (3-core `macos-latest`, CPU at 100%), four iPhone 17 boots in a row hit
+    simlock's fixed 120s `BootTimeoutError`. `xcodebuild -version` and the host-load probe timed
+    out. Then **all of cloudflared's QUIC connections timed out** ("no recent network activity"),
+    and the tunnel answered 502.
+  - The retry warmed in 77s with no failures, using `--protocol http2`.
+  - Same pattern as the S1 uplink drop. Mitigations: cloudflared `--protocol http2`; the runner
+    reports ready only once the warm pool is `ready` (and fails the run after N boot failures);
+    the upstream boot-timeout ask from S1.
+- **The token handoff works,** but for the spike it ran through an encrypted artifact. In the
+  product the runner sends the agent token to our API in `register`, as it does today with its
+  tunnel URL.
+
+**What this means for the plan (if we choose no gateway):**
+
+- The gateway, its hosting, sessions-to-JWT, worker tokens and the capacity alarm all go.
+- The API keeps `runs` with `tunnel_*` plus an encrypted per-run agent token, and hands both to the
+  owner's CLI and dashboard.
+- `simbox sim` picks a run of the platform whose daemon has a free warm device (`GET
+/v1/catalog` or status). If none, it dispatches a new run and waits for `ready`. It then runs
+  `agent-device connect proxy --daemon-base-url https://<run>/v1/agent-device --session …`.
+- The dashboard opens the run's own simlock console, or our panel reads `/v1/leases/{id}/stream`
+  and `/input` from it.
+- One run is about one device on hosted runners, so picking a run is the queue.
+
+## Risks
+
+- **iOS on 3-vCPU hosted Macs.** Simlock's full-mode boot deadline is a fixed 120s and a cold boot
+  can starve cloudflared. Mitigations: warm before announcing, build XCTest in the warm-up,
+  cloudflared over http2 at raised priority, fail the run after repeated boot failures. Ask
+  upstream for a configurable full-mode boot timeout.
+- **Simlock is young and moves fast.** Pin it exactly (`PINS.simlock`) and bump deliberately after
+  an end-to-end run on both platforms.
+- **One shared agent token per run.** All of the owner's clients count as one Simlock requester,
+  hence `lease.maxPerRequester`. Clients cannot see each other's devices' secrets, but they can
+  see each other's leases. That is the same trust boundary as today (one owner per run).
+- **Cloudflare limits:** 524 after 100s of origin silence (kept off the path by warming), and Browser
+  Integrity Check on odd User-Agents.
+- **Second and later devices on a run boot cold** (Simlock boots them on lease). The first
+  agent-device `open` for them can take over 100s on iOS; agent-device retries `open`.
+- **First end-to-end run (2026-10-31, hosted runners, local API).** Confirmed: iOS warm target
+  `iPhone 17e` / 26.5 and Android `pixel_8` / API 35; the stream and input proxies (tap, Home,
+  read-only close 1008). Found and fixed: Simlock refuses per-command `--daemon-base-url`/token
+  flags (tenant isolation needs a run and lease id), so `exec` passes a per-run profile with
+  `--remote-config`; an agent token gets 403 on `/v1/devices`, so preview names leases from the
+  run's booted device; the first iOS `snapshot` on a fresh lease took 164s, past `snapshot`'s 90s
+  default client budget, so the self-test passes `--timeout`.
+- **iOS boots on hosted Macs outlast Simlock's limits.** Four of five runs never warmed: boots took
+  134s+ against Simlock's fixed 120s, and `simctl list` outlasted 30s. A priming boot did not help
+  (every boot is slow, not just the first). The runner patches those constants in the pinned build
+  (`SIMLOCK_PATCHES`) and enables slim mode on iOS 18.5+. Ask upstream to make them configurable.
+- **Lease TTL.** agent-device (0.21.35) asks for a fixed 5-minute proxy lease, renewed only by
+  commands, so an idle session lost its device. The client is the user's install, so the runner
+  patches Simlock's front to use `capabilities.agent-device.leaseTtlCapMs` (30 minutes) as the
+  TTL. Verified: a lease idle for 6.5 minutes kept its id and app; the next command renewed it.
+  Raise upstream (a client-chosen TTL, or a front floor).
+- **`devices` through Simlock.** agent-device asks for streamed progress unless `--json` is set,
+  and the front refused that. The runner patches the front to drop the request; verified on
+  Android and iOS 27 (empty before `open`, then only the token's leased device).
+- **iOS on `xcode-27` (iOS 27.0, the default runner).** Live in about 10 minutes. `open` 10-32s;
+  the first `snapshot` on a lease 3s when the self-test already started XCTest, up to 101s
+  otherwise, so `simbox exec snapshot` gets the 5-minute budget. `macos-latest` (iOS 26.5) warms
+  with the patches but its XCTest build can outlast the self-test.
+- **Verified on 2026-11-01:** `install` before the first `open` (Android APK, iOS simulator
+  `.app`); the Android generic 7.6in Foldable (`fold closed|half-open|open`, hinge 15/90/165°);
+  Android landscape (the stream follows the rotation).
+- **iOS landscape in the panel.** Simlock 0.4.0's iOS capture keeps the portrait framebuffer and
+  its input socket always reports `portrait` (`drivers/ios/input/device-input.js`), so a rotated
+  iOS app shows sideways (taps still land on what is shown). Needs Simlock to report the
+  orientation; raise upstream. The panel's own rotation mapping is then unverified in direction.
+- **iPhone Duo (iOS 27.1, `xcode-27`), verified 2026-11-01.** Warm in 238-366s; the self-test's
+  first `snapshot` took over 270s twice (its XCTest build on a loaded host), so the warm-up gives it
+  15 minutes and a retry first releases every lease (a timed-out `close` left the lease held, and
+  the retry waited on `running-limit`). Passing run: warm 238s, self-test 4m20s, re-warm 246s, live
+  13 minutes after dispatch. `open` 32s, `fold closed` (466x678 pt) and `fold open` (669x951 pt)
+  with matching screenshots. Simlock's slim discovery fails on the 27.1 runtime (`dyld`, exit 134)
+  and logs `Skipped iOS device slim`; the device still warms, so it is noise. Raise upstream.
+- **Stopping a run deletes its tunnel at once,** so the agent's edge probe saw 530 before its next
+  heartbeat said to stop, restarted cloudflared against a deleted tunnel and exited 1. The agent now
+  heartbeats before treating a 530 as a dead connection. Separately, the first 4 minutes after that
+  run went live served 502/524 until cloudflared reconnected on its own; `open` then worked.
+- **Still unverified:** `simbox sim` ensure through the
+  real API and GitHub App; several devices on one run; Blacksmith runners.

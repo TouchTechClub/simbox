@@ -753,8 +753,8 @@ runRoutes.post("/v1/runs/inventory", requireRunnerToken, async (c) => {
   return c.json({ ok: true });
 });
 
-// POST /v1/runs/tunnel — a named Cloudflare tunnel for this run. Agents fall
-// back to a quick tunnel on any failure, including 503 when unconfigured.
+// POST /v1/runs/tunnel — the run's named Cloudflare tunnel to its Simlock
+// daemon. There is no fallback: without it the run cannot serve anyone.
 runRoutes.post("/v1/runs/tunnel", requireRunnerToken, async (c) => {
   const found = await runnerRun(c, await c.req.json<RunnerRef>().catch(() => null));
   if (found instanceof Response) return found;
@@ -770,9 +770,9 @@ runRoutes.post("/v1/runs/tunnel", requireRunnerToken, async (c) => {
   }
 });
 
-// POST /v1/runs/register — the agent announces its tunnel. Re-registering a
-// live run (restarted cloudflared) updates the URL. The hard-exit clock
-// starts here, not at dispatch: queue time is not run time.
+// POST /v1/runs/register — the agent announces its tunnel and the Simlock
+// agent token for the run's owner. Re-registering a live run is idempotent.
+// The hard-exit clock starts here, not at dispatch: queue time is not run time.
 runRoutes.post("/v1/runs/register", requireRunnerToken, async (c) => {
   const body = await c.req.json<RunRegisterRequest>().catch(() => null);
   if (
@@ -783,10 +783,20 @@ runRoutes.post("/v1/runs/register", requireRunnerToken, async (c) => {
     !body.daemonToken
   )
     return apiError(c, 400, "bad_request", "Expected {ghRunId, tunnelUrl, daemonToken, versions}.");
+  if (typeof body.versions?.simlock !== "string")
+    return apiError(
+      c,
+      409,
+      "agent_outdated",
+      "This runner's Simbox agent predates Simlock (v3). Run `simbox repair` to update the workflow, then start a new run.",
+    );
   const found = await runnerRun(c, body);
   if (found instanceof Response) return found;
   const { run, ctx } = found;
   if (!isActive(run)) return runOver(c);
+  // Clients get this URL and the token together: only the run's own tunnel.
+  if (run.tunnel_hostname && new URL(body.tunnelUrl).hostname !== run.tunnel_hostname)
+    return apiError(c, 400, "bad_tunnel", "tunnelUrl is not this run's tunnel.");
   const now = nowSeconds();
   const live = await setRunState(
     ctx.db,

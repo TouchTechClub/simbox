@@ -5,7 +5,7 @@
  * named tunnel keeps several connections and one hostname for the whole run.
  *
  * Per run: a remotely-managed tunnel `simbox-run-<runId>` routing a random
- * `r-<hex>.<TUNNEL_ZONE>` to the runner's gateway, a proxied CNAME to
+ * `r-<hex>.<TUNNEL_ZONE>` to the runner's Simlock daemon, a proxied CNAME to
  * `<tunnelId>.cfargotunnel.com`, and a connector token the agent passes to
  * cloudflared. Cleanup deletes both once the run ends; a cron sweep catches
  * runners that never deregistered and anything a failed request left behind.
@@ -13,7 +13,7 @@
 import { and, eq, isNotNull, or, inArray, lt } from "drizzle-orm";
 import { createDb, schema } from "@simbox/db";
 import type { Database } from "@simbox/db";
-import { PROXY_PORT } from "@simbox/shared";
+import { SIMLOCK_PORT } from "@simbox/shared";
 import type { Env } from "./env";
 import type { RunRow } from "./db";
 import { nowSeconds, randomTokenHex } from "./util";
@@ -188,7 +188,7 @@ export async function provisionRunTunnel(
   await cf(env, "PUT", `/accounts/${account}/cfd_tunnel/${tunnelId}/configurations`, {
     config: {
       ingress: [
-        { hostname, service: `http://127.0.0.1:${PROXY_PORT}` },
+        { hostname, service: `http://127.0.0.1:${SIMLOCK_PORT}` },
         { service: "http_status:404" },
       ],
     },

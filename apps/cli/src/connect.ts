@@ -1,6 +1,11 @@
 import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import pc from "picocolors";
+import { agentDeviceBaseUrl, remoteProfile } from "@simbox/shared";
 import type { BootedDevice, DevicePlatform } from "@simbox/shared";
+import { configDir } from "./config.js";
+import { holderId } from "./holder.js";
 
 export interface ConnectInfo {
   runId: string;
@@ -9,8 +14,27 @@ export interface ConnectInfo {
   expiresAt: number | null;
 }
 
-export function daemonBaseUrl(tunnelUrl: string): string {
-  return `${tunnelUrl.replace(/\/+$/, "")}/agent-device`;
+export const daemonBaseUrl = agentDeviceBaseUrl;
+
+/**
+ * Write the run's agent-device profile (owner-only: it holds the run's token)
+ * and return its path. Rewritten before each use, since a restarted tunnel
+ * changes the URL.
+ */
+export function writeRemoteProfile(info: ConnectInfo, dir = join(configDir(), "profiles")): string {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const path = join(dir, `${info.runId}.json`);
+  writeFileSync(path, `${JSON.stringify(remoteProfile(info), null, 2)}\n`, { mode: 0o600 });
+  chmodSync(path, 0o600);
+  return path;
+}
+
+/**
+ * The agent-device session on a run. Simlock leases one device per session,
+ * so agents sharing a run (`holder`) each get their own device.
+ */
+export function sessionName(runId: string, holder?: string): string {
+  return holder ? `simbox-${runId}-${holder.slice(0, 8)}` : `simbox-${runId}`;
 }
 
 /** Locate the agent-device binary on PATH. */
@@ -30,21 +54,20 @@ export interface ConnectHints {
 }
 
 /**
- * Prefer exec: proxy connect intentionally does NOT persist the daemon token,
- * and URL-derived proxy sessions become stale after a quick-tunnel restart.
+ * Prefer exec: it supplies the token and the run's URL on every command.
  * Keep a direct manual fallback for clients which do not use the Simbox CLI.
  * Output goes to stderr when `quiet` (JSON mode keeps stdout clean).
  */
-export function connectFlow(info: ConnectInfo, hints: ConnectHints, quiet = false): void {
+export function connectFlow(
+  info: ConnectInfo,
+  hints: ConnectHints,
+  quiet = false,
+  holder = holderId(),
+): void {
   const out = quiet ? process.stderr : process.stdout;
-  const base = daemonBaseUrl(info.tunnelUrl);
   const bin = findAgentDevice();
   const { platform, bootedDevice } = hints;
-  const device = bootedDevice
-    ? JSON.stringify(bootedDevice.name)
-    : '"<device from simbox exec devices>"';
-  const selector = platform === "ios" ? "--udid" : "--serial";
-  const id = bootedDevice?.id ?? (platform === "ios" ? "<udid>" : "<serial>");
+  const session = sessionName(info.runId, holder);
 
   if (bin) {
     out.write(`${pc.green("▶")} Ready for ${pc.bold("agent-device")} via Simbox.\n`);
@@ -55,26 +78,25 @@ export function connectFlow(info: ConnectInfo, hints: ConnectHints, quiet = fals
   }
   if (bootedDevice)
     out.write(
-      `  Booted: ${pc.bold(bootedDevice.name)} (${platform === "ios" ? "iOS" : "API"} ${bootedDevice.os}${bootedDevice.id ? `, ${bootedDevice.id}` : ""})\n`,
+      `  Warm: ${pc.bold(bootedDevice.name)} (${platform === "ios" ? "iOS" : "API"} ${bootedDevice.os})\n`,
     );
 
-  out.write(`\n  ${pc.cyan(`simbox exec devices --platform ${platform}`)}\n`);
-  out.write(`  ${pc.cyan(`simbox exec open <app> --platform ${platform} --device ${device}`)}\n`);
+  out.write(`\n  ${pc.cyan(`simbox exec open <app> --platform ${platform}`)}\n`);
   out.write(`  ${pc.cyan(`simbox exec snapshot -i --platform ${platform}`)}\n`);
+  out.write(`  ${pc.cyan(`simbox exec close --platform ${platform}`)}\n`);
   out.write(
-    `  Pass --platform ${platform} whenever both an iOS and an Android run are active; use ${selector} to pick a specific device.\n`,
+    `  Pass --platform ${platform} whenever both an iOS and an Android run are active. \`open\` leases a device; \`close\` releases it.\n`,
   );
   out.write(
     `  This run (${info.runId}) is reserved for this agent; other agents get their own. SIMBOX_RUN=${info.runId} pins a shell to it.\n`,
   );
+  out.write("  exec supplies auth and allows 5 minutes for a cold boot.\n\n");
+  out.write(`  A lease idle for 30 minutes expires and Simlock erases the device.\n\n`);
+  out.write(pc.dim("  manual connect (the profile holds the run's token):\n"));
   out.write(
-    "  exec supplies auth, refreshes tunnel URLs, and allows 5 minutes for cold startup.\n\n",
+    `  ${pc.cyan(`agent-device connect --remote-config ${writeRemoteProfile(info)} --session ${session}`)}\n`,
   );
-  out.write(pc.dim("  manual connect:\n"));
-  out.write(`  ${pc.cyan(`export AGENT_DEVICE_DAEMON_AUTH_TOKEN=${info.daemonToken}`)}\n`);
-  out.write(`  ${pc.cyan(`export AGENT_DEVICE_DAEMON_BASE_URL=${base}`)}\n`);
   out.write(
-    `  ${pc.cyan(`agent-device open <app> --platform ${platform} ${selector} ${id} --session simbox-${info.runId} --timeout 300000`)}\n`,
+    `  ${pc.cyan(`agent-device open <app> --platform ${platform} --session ${session} --timeout 300000`)}\n`,
   );
-  out.write("  Raw agent-device commands need these exports again if the tunnel changes.\n");
 }

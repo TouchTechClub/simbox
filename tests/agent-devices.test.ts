@@ -129,8 +129,8 @@ Available Packages:
   expect(parseSystemImageApis(listing, "x64")).toEqual(["37", "35", "28"]);
   expect(parseSystemImageApis(listing, "arm64")).toEqual(["36"]);
   const catalog = buildAndroidCatalog(["35", "30"], []);
-  expect(catalog.os.map((os) => os.version)).toEqual(["37.0", "35", "30"]);
-  expect(catalog.defaults).toEqual({ model: "pixel_6", os: "37.0" });
+  expect(catalog.os.map((os) => os.version)).toEqual(["35", "30"]);
+  expect(catalog.defaults).toEqual({ model: "pixel_8", os: "35" });
 });
 
 test("Android hardware profiles: phones, then foldables, then tablets; no TVs or watches", () => {
@@ -165,7 +165,7 @@ test("Android hardware profiles: phones, then foldables, then tablets; no TVs or
     "pixel_fold",
     "7.6in Foldable",
   ]);
-  const catalog = buildAndroidCatalog(["35"], models);
+  const catalog = buildAndroidCatalog(["37.0"], models);
   const pick = pickDevice({ model: "Pixel 9 Pro", os: "37" }, catalog);
   expect(pick.ok && [pick.model.id, pick.os.version]).toEqual(["pixel_9_pro", "37.0"]);
 });

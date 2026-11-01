@@ -52,8 +52,11 @@ export interface PublicRun {
   device: DeviceProfile | null;
   /** What the runner actually booted, once it reports it. */
   bootedDevice: BootedDevice | null;
+  /** The run's named tunnel; Simlock's HTTP API is under `/v1`. */
   tunnelUrl: string | null;
+  /** Simlock agent token for this run's daemon (owner only). */
   daemonToken: string | null;
+  /** Simlock leases held on the run. */
   activeDevices: number;
   /** Devices the runner runs at once; estimated until the runner reports it. */
   maxDevices: number | null;
@@ -133,9 +136,10 @@ export interface RunRegisterRequest {
   daemonToken: string;
   versions: {
     agent: string;
+    /** Simlock serves the run; agents without it predate v3 and are refused. */
+    simlock?: string;
     agentDevice: string;
     cloudflared: string;
-    deviceHub?: string;
   };
   /** Devices this runner runs at once, when it reports them; else the API estimates it. */
   maxDevices?: number;
@@ -195,9 +199,10 @@ export interface RunTunnelResponse {
 export interface RunHeartbeatRequest {
   ghRunId: number;
   runId?: string;
+  /** Simlock leases held on the run. */
   activeDevices: number;
   androidReady: boolean;
-  /** Newer agents: the run's devices are booted (iOS or Android). */
+  /** A warm device is ready to lease (iOS or Android). */
   devicesReady?: boolean;
 }
 

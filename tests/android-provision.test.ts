@@ -8,8 +8,11 @@ import {
   configureAndroidEnvironment,
   createAndroidAdapter,
 } from "../packages/agent/src/android.js";
-import { DeviceRequestError } from "../packages/agent/src/platform.js";
-import type { ChildProc } from "../packages/agent/src/proc.js";
+import {
+  bootedFromChoice,
+  DeviceRequestError,
+  type DeviceChoice,
+} from "../packages/agent/src/platform.js";
 
 const LISTING = `Installed packages:
   Path                                        | Version | Description | Location
@@ -22,18 +25,17 @@ Available Packages:
   system-images;android-37.0;google_apis;x86_64 | 1  | Google APIs Intel x86_64 Atom System Image
 `;
 
-interface Provisioned {
-  avdArgs: string[];
+interface Prepared {
+  choice: DeviceChoice;
   sdkCalls: string[][];
-  booted: unknown;
-  emulatorAlive: boolean;
+  model: string;
 }
 
-/** A fake SDK whose tools record their arguments; the emulator "boots" at once. */
-async function provision(
+/** A fake SDK whose tools record their arguments. Simlock creates and boots the AVD. */
+async function prepare(
   selector: DeviceProfile | null,
-  options: { deviceList?: string; emulatorDies?: boolean } = {},
-): Promise<Provisioned> {
+  options: { deviceList?: string; installFails?: boolean } = {},
+): Promise<Prepared> {
   const dir = await mkdtemp(join(tmpdir(), "simbox-android-test-"));
   const keys = [
     "ANDROID_HOME",
@@ -43,10 +45,9 @@ async function provision(
     "ANDROID_EMULATOR_HOME",
     "SDK_LOG",
     "SDK_LISTING",
-    "SIMBOX_TOKEN",
+    "SDK_FAIL",
   ];
   const original = Object.fromEntries(keys.map((key) => [key, Bun.env[key]]));
-  let child: ChildProc | undefined;
   try {
     const sdk = join(dir, "sdk");
     for (const folder of ["cmdline-tools/latest/bin", "emulator", "platform-tools"])
@@ -54,32 +55,16 @@ async function provision(
     const deviceList = options.deviceList ?? "pixel_6\\npixel_8\\n7.6in Foldable\\ntv_1080p";
     const tools: Record<string, string> = {
       "cmdline-tools/latest/bin/sdkmanager": `
-        const fs = require('node:fs');
-        fs.appendFileSync(process.env.SDK_LOG, JSON.stringify(process.argv.slice(2)) + '\\n');
-        if (process.argv.includes('--list')) process.stdout.write(fs.readFileSync(process.env.SDK_LISTING, 'utf8'));
+        const fs = require('node:fs'); const args = process.argv.slice(2);
+        fs.appendFileSync(process.env.SDK_LOG, JSON.stringify(args) + '\\n');
+        if (args.includes('--list')) process.stdout.write(fs.readFileSync(process.env.SDK_LISTING, 'utf8'));
+        else if (!args.includes('--licenses') && process.env.SDK_FAIL) process.exit(3);
       `,
       "cmdline-tools/latest/bin/avdmanager": `
-        const fs = require('node:fs'); const args = process.argv.slice(2);
-        if (args[0] === 'list') { console.log('${deviceList}'); process.exit(0); }
-        const path = args[args.indexOf('--path') + 1];
-        if (!process.env.ANDROID_AVD_HOME || !path.endsWith('simbox.avd')) process.exit(1);
-        fs.mkdirSync(path, { recursive: true });
-        fs.writeFileSync(path + '/config.ini', 'AvdId=simbox\\n');
-        fs.writeFileSync(process.env.ANDROID_AVD_HOME + '/avdmanager-args', JSON.stringify(args));
+        if (process.argv[2] === 'list') { console.log('${deviceList}'); process.exit(0); }
+        process.exit(1);
       `,
-      "emulator/emulator": `
-        if (process.argv.includes('-accel-check')) process.exit(0);
-        if (process.env.SIMBOX_TOKEN) process.exit(9);
-        ${options.emulatorDies ? "process.exit(1);" : ""}
-        const fs = require('node:fs'); const path = process.env.ANDROID_AVD_HOME + '/simbox.ini';
-        if (!fs.readFileSync(path, 'utf8').includes('simbox.avd')) process.exit(1);
-        fs.writeFileSync(process.env.ANDROID_AVD_HOME + '/alive', '');
-        setInterval(() => {}, 1000);
-      `,
-      "platform-tools/adb": `
-        const fs = require('node:fs');
-        console.log(fs.existsSync(process.env.ANDROID_AVD_HOME + '/alive') ? '1' : '0');
-      `,
+      "emulator/emulator": `process.exit(0);`,
     };
     for (const [path, source] of Object.entries(tools)) {
       await Bun.write(join(sdk, path), `#!/usr/bin/env node\n${source}\n`);
@@ -91,35 +76,18 @@ async function provision(
     Bun.env.ANDROID_HOME = sdk;
     Bun.env.ANDROID_USER_HOME = join(dir, "android-user");
     Bun.env.ANDROID_AVD_HOME = join(dir, "avds");
-    Bun.env.SIMBOX_TOKEN = "repo-secret"; // children must never see it
+    if (options.installFails) Bun.env.SDK_FAIL = "1";
+    else delete Bun.env.SDK_FAIL;
     await configureAndroidEnvironment();
-    const adapter = createAndroidAdapter({
-      arch: "x64",
-      bootTimeoutMs: 5000,
-      onEmulator: (proc) => {
-        child = proc;
-      },
-    });
+    const adapter = createAndroidAdapter({ arch: "x64" });
     const choice = await adapter.select(selector);
-    const booted = await adapter.boot(choice);
+    await adapter.prepare(choice);
     const sdkCalls = (await Bun.file(join(dir, "sdk-log")).text())
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as string[]);
-    expect(await Bun.file(join(dir, "avds/simbox.ini")).text()).toContain(
-      `path=${dir}/avds/simbox.avd`,
-    );
-    return {
-      avdArgs: JSON.parse(await Bun.file(join(dir, "avds/avdmanager-args")).text()) as string[],
-      sdkCalls,
-      booted,
-      emulatorAlive: child?.exitCode === null,
-    };
+    return { choice, sdkCalls, model: adapter.simlockModel(choice) };
   } finally {
-    if (child && child.exitCode === null) {
-      child.kill();
-      await child.exited;
-    }
     for (const key of keys) {
       if (original[key] === undefined) delete Bun.env[key];
       else Bun.env[key] = original[key];
@@ -128,32 +96,11 @@ async function provision(
   }
 }
 
-test("defaults boot pixel_6 on the pinned API without listing the SDK repository", async () => {
-  const result = await provision(null);
-  expect(result.avdArgs[result.avdArgs.indexOf("-d") + 1]).toBe("pixel_6");
-  expect(result.avdArgs[result.avdArgs.indexOf("-k") + 1]).toBe(
-    "system-images;android-37.0;google_apis;x86_64",
-  );
+test("defaults install pixel_8 on the pinned API without listing the SDK repository", async () => {
+  const result = await prepare(null);
+  expect(result.model).toBe("pixel_8");
+  expect(bootedFromChoice(result.choice)).toEqual({ model: "Pixel 8", os: "35", name: "Pixel 8" });
   expect(result.sdkCalls.some((args) => args.includes("--list"))).toBe(false);
-  expect(result.sdkCalls).toContainEqual([
-    "platform-tools",
-    "emulator",
-    "platforms;android-37.0",
-    "system-images;android-37.0;google_apis;x86_64",
-  ]);
-  expect(result.emulatorAlive).toBe(true);
-  expect(result.booted).toEqual({
-    model: "Pixel 6",
-    os: "37.0",
-    name: "simbox",
-    id: "emulator-5554",
-  });
-}, 15_000);
-
-test("a requested API and model install exactly those packages", async () => {
-  const result = await provision({ model: "Pixel 8", os: "35" });
-  expect(result.sdkCalls.some((args) => args.includes("--list"))).toBe(true);
-  expect(result.avdArgs[result.avdArgs.indexOf("-d") + 1]).toBe("pixel_8");
   expect(result.sdkCalls).toContainEqual([
     "platform-tools",
     "emulator",
@@ -162,23 +109,35 @@ test("a requested API and model install exactly those packages", async () => {
   ]);
 }, 15_000);
 
-test("a foldable run creates the AVD from a foldable hardware profile", async () => {
-  const result = await provision({ foldable: true });
-  expect(result.avdArgs[result.avdArgs.indexOf("-d") + 1]).toBe("7.6in Foldable");
+test("a requested API and model install exactly those packages", async () => {
+  const result = await prepare({ model: "Pixel 6", os: "37.0" });
+  expect(result.sdkCalls.some((args) => args.includes("--list"))).toBe(true);
+  expect(result.model).toBe("pixel_6");
+  expect(result.sdkCalls).toContainEqual([
+    "platform-tools",
+    "emulator",
+    "platforms;android-37.0",
+    "system-images;android-37.0;google_apis;x86_64",
+  ]);
+}, 15_000);
+
+test("a foldable run warms a foldable hardware profile", async () => {
+  const result = await prepare({ foldable: true });
+  expect(result.model).toBe("7.6in Foldable");
 }, 15_000);
 
 test("a device or API the runner cannot provide is a request error, never a substitute", async () => {
-  await expect(provision({ model: "pixel_99" })).rejects.toBeInstanceOf(DeviceRequestError);
-  await expect(provision({ os: "27" })).rejects.toThrow("not available on this runner");
-  await expect(provision({ os: "36" })).rejects.toThrow("available: 37.0, 35, 30");
+  await expect(prepare({ model: "pixel_99" })).rejects.toBeInstanceOf(DeviceRequestError);
+  await expect(prepare({ os: "27" })).rejects.toThrow("not available on this runner");
+  await expect(prepare({ os: "36" })).rejects.toThrow("available: 37.0, 35, 30");
 }, 30_000);
 
-test("an emulator that dies during boot fails preparation", async () => {
-  await expect(provision(null, { emulatorDies: true })).rejects.toThrow("failed to boot");
+test("an image that cannot be installed fails preparation", async () => {
+  await expect(prepare(null, { installFails: true })).rejects.toThrow("could not install API 35");
 }, 15_000);
 
 test("foldables prefer pixel_fold when the SDK ships it", () => {
   expect(androidHardwareProfile(true, ["pixel_fold", "7.6in Foldable"])).toBe("pixel_fold");
   expect(androidHardwareProfile(true, ["7.6in Foldable"])).toBe("7.6in Foldable");
-  expect(androidHardwareProfile(false, ["pixel_fold"])).toBe("pixel_6");
+  expect(androidHardwareProfile(false, ["pixel_fold"])).toBe("pixel_8");
 });

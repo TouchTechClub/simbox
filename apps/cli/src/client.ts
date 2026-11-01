@@ -68,9 +68,13 @@ function unreachable(err: unknown, timeoutMs: number): CliError {
   );
 }
 
+/** Sent on every request: Cloudflare's Browser Integrity Check refuses some defaults. */
+export const USER_AGENT = "simbox-cli";
+
 export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = {
     accept: "application/json",
+    "user-agent": USER_AGENT,
   };
   const useAuth = opts.auth !== false;
   const token = opts.token ?? (useAuth ? loadToken() : null);
@@ -159,7 +163,7 @@ export async function pollDeviceToken(deviceCode: string): Promise<DeviceTokenRe
   try {
     res = await fetch(`${apiBaseUrl()}/api/auth/device/token`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "user-agent": USER_AGENT },
       body: JSON.stringify({
         grant_type: "urn:ietf:params:oauth:grant-type:device_code",
         device_code: deviceCode,

@@ -5,3 +5,4 @@ export * from "./device-profile.js";
 export * from "./preview.js";
 export * from "./device-catalog.js";
 export * from "./workflow.js";
+export * from "./remote-profile.js";

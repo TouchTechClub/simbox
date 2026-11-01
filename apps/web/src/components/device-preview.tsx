@@ -8,7 +8,6 @@ import {
   ArrowLeft,
   Layers,
   Power,
-  RotateCw,
   Camera,
   Maximize2,
   X,
@@ -18,7 +17,6 @@ import { useEffect, useRef, useState, type PointerEvent, type KeyboardEvent } fr
 import { hidUsage, type PreviewDevice, type PreviewInput } from "@simbox/shared/preview";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Notice } from "@/components/ui/notice";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { api } from "@/lib/api";
@@ -61,9 +59,7 @@ function DeviceScreen({
   });
   const [inputReady, setInputReady] = useState(false);
   const [hasFrame, setHasFrame] = useState(false);
-  const [text, setText] = useState("");
   const [lastFrameAt, setLastFrameAt] = useState<number | null>(null);
-  const [orientation, setOrientation] = useState(0);
   const canControl = control && inputReady && visible && status.state === "live";
   useEffect(() => {
     if (!visible || !canvas.current) return;
@@ -150,25 +146,8 @@ function DeviceScreen({
   const key = (event: KeyboardEvent<HTMLCanvasElement>, phase: "down" | "up") => {
     if (!canControl || event.repeat || event.nativeEvent.isComposing) return;
     event.preventDefault();
-    if (device.platform === "android" && (event.ctrlKey || event.metaKey || event.altKey)) return;
-    if (device.platform === "ios" && hidUsage(event.code) === null) return;
-    if (
-      device.platform === "android" &&
-      (phase === "up" ||
-        (event.key.length !== 1 &&
-          ![
-            "Enter",
-            "Backspace",
-            "Delete",
-            "Tab",
-            "Escape",
-            "ArrowUp",
-            "ArrowDown",
-            "ArrowLeft",
-            "ArrowRight",
-          ].includes(event.key)))
-    )
-      return;
+    // Simlock maps USB HID usages to each platform's keys; shortcuts stay local.
+    if (event.ctrlKey || event.metaKey || hidUsage(event.code) === null) return;
     const input = { code: event.code, key: event.key };
     if (phase === "down") heldKeys.current.set(event.code, input);
     else heldKeys.current.delete(event.code);
@@ -321,61 +300,11 @@ function DeviceScreen({
               <Power />
               Lock / wake
             </Button>
-            {device.platform === "ios" ? (
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!canControl}
-                onClick={() => {
-                  const next = (orientation + 1) % 4;
-                  setOrientation(next);
-                  send({
-                    type: "rotate",
-                    orientation: (
-                      [
-                        "portrait",
-                        "landscape_left",
-                        "portrait_upside_down",
-                        "landscape_right",
-                      ] as const
-                    )[next]!,
-                  });
-                }}
-              >
-                <RotateCw />
-                Rotate
-              </Button>
-            ) : null}
           </div>
-          {device.platform === "android" ? (
-            <form
-              className="flex gap-2"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (!text || !canControl) return;
-                send({ type: "text", text });
-                setText("");
-              }}
-            >
-              <Input
-                aria-label="Text to type on Android"
-                placeholder="Type text on the device…"
-                value={text}
-                maxLength={1000}
-                disabled={!canControl}
-                onChange={(event) => setText(event.target.value)}
-              />
-              <Button size="sm" disabled={!canControl || !text} type="submit">
-                Send text
-              </Button>
-            </form>
-          ) : null}
           <p className="text-xs text-muted-foreground">
             Click the screen to focus, then type. Drag to swipe. These controls act directly on{" "}
-            {device.name}; coordinate with agents using the same device.{" "}
-            {device.platform === "ios"
-              ? "iOS uses hardware-key events; paste/IME text is not supported."
-              : "Android modifier shortcuts are not forwarded."}
+            {device.name}; coordinate with agents using the same device. Keys are sent as
+            hardware-key events; paste, IME text and rotation are not supported.
           </p>
         </>
       ) : (
@@ -421,7 +350,8 @@ export function DevicePreviewPanel({ runId }: { runId: string }) {
             Devices
           </CardTitle>
           <CardDescription>
-            Live video and optional browser controls, powered by the same hub as T3 Code.
+            Live video of devices leased on this run, with optional browser controls. Powered by
+            Simlock.
           </CardDescription>
         </div>
         <Button

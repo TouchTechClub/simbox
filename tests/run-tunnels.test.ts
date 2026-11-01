@@ -177,7 +177,7 @@ test("runs get one named tunnel, foreign runs get none, and ended or orphaned tu
     expect(tunnel!.name).toBe("simbox-run-run-1");
     expect(named.connectorToken).toBe(`connector-token-for-${tunnel!.id}`);
     expect(cloudflare.configs.get(tunnel!.id)).toEqual({
-      ingress: [{ hostname, service: "http://127.0.0.1:4310" }, { service: "http_status:404" }],
+      ingress: [{ hostname, service: "http://127.0.0.1:4701" }, { service: "http_status:404" }],
     });
     const [record] = cloudflare.records.values();
     expect(record).toMatchObject({

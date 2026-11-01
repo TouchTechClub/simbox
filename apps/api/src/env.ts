@@ -20,7 +20,7 @@ export interface Env {
   CLOUDFLARE_ACCOUNT_ID?: string;
   /**
    * Token with Account › Cloudflare Tunnel: Edit and, on TUNNEL_ZONE,
-   * Zone: Read + DNS: Edit. Unset → runners fall back to quick tunnels.
+   * Zone: Read + DNS: Edit. Required: runners cannot go live without it.
    */
   CLOUDFLARE_TUNNEL_API_TOKEN?: string;
   /** Zone runner hostnames live directly under (free Universal SSL covers one level). */

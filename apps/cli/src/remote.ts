@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { CliError } from "./client.js";
 import { configDir } from "./config.js";
-import { daemonBaseUrl, findAgentDevice } from "./connect.js";
+import { findAgentDevice, sessionName, writeRemoteProfile } from "./connect.js";
+import { holderId } from "./holder.js";
 import type { ConnectInfo } from "./connect.js";
 import { sleep } from "./util.js";
 import { registerDevice } from "./device-registration.js";
@@ -11,30 +12,38 @@ import { connectForArgs, probeRemote, refreshRun, waitForRemote } from "./runs.j
 
 export const STARTUP_TIMEOUT_MS = 300_000;
 
-export function remoteArgs(args: string[], info: ConnectInfo, stateDir: string): string[] {
+/**
+ * Commands that can wait on a cold device. A lease's first iOS `snapshot`
+ * starts agent-device's XCTest runner: 101-164s on hosted Macs, past its 90s
+ * default client budget.
+ */
+const STARTUP_COMMANDS = new Set(["open", "boot", "prepare", "snapshot"]);
+
+export function remoteArgs(
+  args: string[],
+  info: ConnectInfo,
+  stateDir: string,
+  profile: string,
+  holder = holderId(),
+): string[] {
   // Isolate from saved agent-device proxy profiles: those may hold a stale URL
-  // or an orphaned lease from a timed-out open. The daemon itself still enforces
-  // exclusive device ownership by session. Do not overwrite user-owned config.
+  // or an orphaned lease from a timed-out open. Simlock leases one device per
+  // session. Do not overwrite user-owned config.
   const separator = args.indexOf("--");
   const result = separator < 0 ? [...args] : args.slice(0, separator);
   const tail = separator < 0 ? [] : args.slice(separator);
-  if (["open", "boot", "prepare"].includes(args[0] ?? "") && !hasFlag(args, "--timeout")) {
+  if (STARTUP_COMMANDS.has(args[0] ?? "") && !hasFlag(args, "--timeout")) {
     result.push("--timeout", String(STARTUP_TIMEOUT_MS));
   }
-  if (!hasFlag(args, "--session")) result.push("--session", `simbox-${info.runId}`);
-  result.push(
-    "--state-dir",
-    stateDir,
-    "--daemon-base-url",
-    daemonBaseUrl(info.tunnelUrl),
-    "--daemon-transport",
-    "http",
-  );
+  if (!hasFlag(args, "--session")) result.push("--session", sessionName(info.runId, holder));
+  // The profile carries the URL, token and tenant scope Simlock requires.
+  result.push("--state-dir", stateDir, "--remote-config", profile);
   return [...result, ...tail];
 }
 
 /**
- * Commands that only read state or set it to an absolute value (a fold pose).
+ * Commands that only read state or set it to an absolute value (a fold pose,
+ * an orientation).
  * Replaying one after a dropped tunnel is harmless; taps, typing, installs and
  * opens are never replayed.
  */
@@ -43,6 +52,7 @@ const REPLAY_SAFE = new Set([
   "snapshot",
   "screenshot",
   "fold",
+  "orientation",
   "session",
   "appstate",
   "apps",
@@ -77,6 +87,10 @@ export async function cmdExec(args: string[]): Promise<void> {
     "--daemon-transport",
     "--remote-config",
     "--state-dir",
+    "--tenant",
+    "--run-id",
+    "--lease-id",
+    "--session-isolation",
   ];
   if (reserved.some((flag) => hasFlag(args, flag))) {
     throw new CliError(
@@ -87,7 +101,7 @@ export async function cmdExec(args: string[]): Promise<void> {
     throw new CliError("Use device commands with `simbox exec`, not connection/auth commands.");
   }
   const bin = findAgentDevice();
-  if (!bin) throw new CliError("Install agent-device first: npm i -g agent-device@0.21.28");
+  if (!bin) throw new CliError("Install agent-device first: npm i -g agent-device@0.21.35");
   // Each agent uses its own run and cache; the platform is explicit, or the
   // only one this agent uses. An iOS endpoint never serves an Android command.
   const { platform, info } = await connectForArgs(args);
@@ -137,16 +151,15 @@ async function runRemote(
   info: ConnectInfo,
   capture: boolean,
 ): Promise<{ code: number; output: string; stdout: string; stderr: string }> {
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    AGENT_DEVICE_DAEMON_AUTH_TOKEN: info.daemonToken,
-  };
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  delete env.AGENT_DEVICE_DAEMON_AUTH_TOKEN;
   delete env.AGENT_DEVICE_REMOTE_CONFIG;
   delete env.AGENT_DEVICE_DAEMON_BASE_URL;
   let stdout = "";
   let stderr = "";
   const code = await new Promise<number>((resolve, reject) => {
-    const child = spawn(bin, remoteArgs(args, info, join(configDir(), "agent-device")), {
+    const profile = writeRemoteProfile(info);
+    const child = spawn(bin, remoteArgs(args, info, join(configDir(), "agent-device"), profile), {
       stdio: capture ? ["inherit", "pipe", "pipe"] : "inherit",
       env,
     });

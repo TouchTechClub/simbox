@@ -34,28 +34,30 @@ export function validPreviewDevice(id: unknown): id is string {
   return typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(id);
 }
 
-/** Only active virtual devices, never paths supplied by the upstream service. */
-export function previewInventory(raw: unknown, platform: DevicePlatform): PreviewInventory {
-  const data = raw as { simulators?: unknown; emulators?: unknown } | null;
-  const list = platform === "ios" ? data?.simulators : data?.emulators;
-  if (!Array.isArray(list)) throw new Error("Invalid device hub inventory");
+interface SimlockLease {
+  id?: unknown;
+}
+
+/**
+ * The run's viewable devices: its Simlock leases (`GET /v1/leases`). Ids are
+ * lease ids, never paths. An agent token cannot list Simlock's devices, and a
+ * run warms one target, so every lease is named after the run's device.
+ */
+export function leaseInventory(
+  rawLeases: unknown,
+  platform: DevicePlatform,
+  device?: { name?: string | null; version?: string | null } | null,
+): PreviewInventory {
+  const leases = (rawLeases as { leases?: unknown } | null)?.leases;
+  if (!Array.isArray(leases)) throw new Error("Invalid Simlock lease list");
   const devices: PreviewDevice[] = [];
-  for (const item of list.slice(0, 100)) {
-    if (
-      !item ||
-      typeof item !== "object" ||
-      item.platform !== platform ||
-      item.booted !== true ||
-      item.physical === true ||
-      item.supported === false ||
-      !validPreviewDevice(item.id)
-    )
-      continue;
-    if (devices.some((device) => device.id === item.id)) continue;
+  for (const lease of leases.slice(0, 100) as SimlockLease[]) {
+    if (!lease || !validPreviewDevice(lease.id)) continue;
+    if (devices.some((known) => known.id === lease.id)) continue;
     devices.push({
-      id: item.id,
-      name: typeof item.name === "string" ? item.name.slice(0, 150) : item.id,
-      version: typeof item.version === "string" ? item.version.slice(0, 80) : "",
+      id: lease.id,
+      name: (device?.name || "Leased device").slice(0, 150),
+      version: (device?.version || "").slice(0, 80),
       platform,
     });
   }
@@ -161,71 +163,30 @@ function tagged(tag: number, payload: unknown): Uint8Array {
   return bytes;
 }
 
-/** A deliberately small wire allowlist: no shell, app management or generic RPC. */
-export function hubInput(
-  platform: DevicePlatform,
-  input: PreviewInput,
-): string | Uint8Array | null {
-  if (platform === "android") {
-    switch (input.type) {
-      case "touch":
-        return JSON.stringify({
-          type: "touch",
-          action: input.phase === "begin" ? "down" : input.phase === "end" ? "up" : "move",
-          x: input.x,
-          y: input.y,
-        });
-      case "button":
-        return JSON.stringify({ type: input.button });
-      case "text":
-        return JSON.stringify(input);
-      case "reset-video":
-        return JSON.stringify({ type: "reset-video", ack: false });
-      case "key": {
-        if (input.phase === "up") return null;
-        const keycode = (
-          {
-            Enter: 66,
-            Backspace: 67,
-            Delete: 112,
-            Tab: 61,
-            ArrowUp: 19,
-            ArrowDown: 20,
-            ArrowLeft: 21,
-            ArrowRight: 22,
-            Escape: 4,
-          } as Record<string, number>
-        )[input.key];
-        if (keycode !== undefined) return JSON.stringify({ type: "key", keycode });
-        return input.key.length === 1 ? JSON.stringify({ type: "text", text: input.key }) : null;
-      }
-      default:
-        return null;
-    }
-  }
+/**
+ * Simlock's input socket (serve-sim messages, both platforms): touch `0x03`,
+ * button `0x04`, key `0x06` (USB HID usage). A deliberately small allowlist:
+ * no shell, app management or generic RPC. Simlock cannot rotate or type
+ * text over this socket; those return null.
+ */
+export function simlockInput(input: PreviewInput): Uint8Array | null {
   switch (input.type) {
     case "touch":
       return tagged(0x03, { type: input.phase, x: input.x, y: input.y });
     case "button":
-      return input.button === "back"
-        ? null
-        : tagged(0x04, {
-            button:
-              input.button === "recents"
-                ? "app_switcher"
-                : input.button === "power"
-                  ? "lock"
-                  : "home",
-          });
+      return tagged(0x04, {
+        button:
+          input.button === "recents"
+            ? "app_switcher"
+            : input.button === "power"
+              ? "lock"
+              : input.button,
+      });
     case "key": {
       const usage = hidUsage(input.code);
       return usage === null ? null : tagged(0x06, { type: input.phase, usage });
     }
-    case "rotate":
-      return tagged(0x07, { orientation: input.orientation });
     default:
       return null;
   }
 }
-
-export const iosHardwareKeyboard = () => tagged(0x0d, { enabled: false });

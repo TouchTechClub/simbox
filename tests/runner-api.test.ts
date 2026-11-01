@@ -272,12 +272,23 @@ test("iOS and Android runs are independent, correlated by run id, and only the m
 
     // Register makes it live and starts the hard-exit clock there.
     expect(t.runRow(ios.body.runId).expires_at).toBeNull();
-    const registered = await t.runner("/v1/runs/register", {
+    const registration = {
       ghRunId: ghIos!.id,
       runId: ios.body.runId,
       tunnelUrl: "https://ios.example.invalid",
       daemonToken: "daemon-ios",
+    };
+    // An agent from before Simlock cannot serve v3 clients.
+    const outdated = await t.runner("/v1/runs/register", {
+      ...registration,
       versions: { agent: "x", agentDevice: "x", cloudflared: "x" },
+    });
+    expect(outdated.status).toBe(409);
+    expect(outdated.body.error).toBe("agent_outdated");
+    expect(t.runRow(ios.body.runId).state).toBe("booting");
+    const registered = await t.runner("/v1/runs/register", {
+      ...registration,
+      versions: { agent: "x", simlock: "x", agentDevice: "x", cloudflared: "x" },
     });
     expect(registered.status).toBe(200);
     expect(t.runRow(ios.body.runId).expires_at).toBeGreaterThan(Date.now() / 1000 + 3600);
@@ -503,7 +514,7 @@ test("each caller keeps its run; full small runners send others to new runs, up 
         runId,
         tunnelUrl: `https://${runId}.example.invalid`,
         daemonToken: `daemon-${runId}`,
-        versions: { agent: "x", agentDevice: "x", cloudflared: "x" },
+        versions: { agent: "x", simlock: "x", agentDevice: "x", cloudflared: "x" },
         ...(maxDevices ? { maxDevices } : {}),
       });
       expect(registered.status).toBe(200);

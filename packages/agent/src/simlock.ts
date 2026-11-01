@@ -89,12 +89,22 @@ export async function installSimlock(): Promise<SimlockBins> {
   }
 }
 
+/** How long an agent-device lease survives without a command. */
+export const AGENT_DEVICE_LEASE_TTL_MS = 30 * 60_000;
+
 /**
- * Simlock 0.4.0 hard-codes iOS timeouts that hosted Macs (3 vCPUs) cannot
- * meet: in testing, a boot took 134s against a 120s limit and `simctl list`
- * outlasted 30s, so most runs never warmed. Raise them in the pinned build
- * until Simlock makes them configurable. Each edit must match exactly, so a
- * Simlock bump that moves them fails the run instead of silently reverting.
+ * Edits to the pinned Simlock build, until upstream makes these configurable.
+ * Each edit must match exactly, so a Simlock bump that moves one fails the run
+ * instead of silently reverting it.
+ *
+ * - Simlock 0.4.0 hard-codes iOS timeouts that hosted Macs (3 vCPUs) cannot
+ *   meet: in testing, a boot took 134s against a 120s limit and `simctl list`
+ *   outlasted 30s, so most runs never warmed.
+ * - agent-device (0.21.35) asks for a fixed 5-minute proxy lease, renewed only
+ *   by commands, so an agent that pauses to think loses its device and Simlock
+ *   wipes it. The client runs on the user's machine, so the runner overrides
+ *   it in Simlock's agent-device front: there the configured
+ *   `leaseTtlCapMs` becomes the TTL instead of only capping the client's.
  */
 export const SIMLOCK_PATCHES: Array<{ file: string; from: string; to: string }> = [
   {
@@ -112,6 +122,11 @@ export const SIMLOCK_PATCHES: Array<{ file: string; from: string; to: string }> 
     from: "const CATALOG_READ_LIMIT_MS = 30_000;",
     to: "const CATALOG_READ_LIMIT_MS = 120_000;",
   },
+  {
+    file: "agent-device/front/ttl.js",
+    from: "return Math.max(cap === undefined ? sent : Math.min(sent, cap), MIN_TTL_MS);",
+    to: "return Math.max(cap === undefined ? sent : cap, MIN_TTL_MS);",
+  },
 ];
 
 export function patchSource(source: string, from: string, to: string): string {
@@ -125,7 +140,7 @@ async function patchSimlock(dist: string): Promise<void> {
     const path = join(dist, file);
     await writeFile(path, patchSource(await readFile(path, "utf8"), from, to));
   }
-  info(`patched Simlock's iOS timeouts (${SIMLOCK_PATCHES.length} constants)`);
+  info(`patched Simlock: iOS timeouts, agent-device lease TTL (${SIMLOCK_PATCHES.length} edits)`);
 }
 
 /** Simlock's slim mode applies from iOS 18.5; older runtimes always boot full. */
@@ -143,6 +158,8 @@ export function simlockSettings(options: {
   const { target } = options;
   const settings: Array<[string, string]> = [
     ["capabilities.agent-device.enabled", "true"],
+    // With SIMLOCK_PATCHES, the TTL of every agent-device lease.
+    ["capabilities.agent-device.leaseTtlCapMs", String(AGENT_DEVICE_LEASE_TTL_MS)],
     ["capabilities.stream.enabled", "true"],
     ["capabilities.input.enabled", "true"],
     // The pin is deliberate; a runner never updates itself mid-run.

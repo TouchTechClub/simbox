@@ -406,6 +406,10 @@ describe("remote commands", () => {
     expect(args).not.toContain("simbox-run-1");
     expect(remoteArgs(["press", "@e1"], info, "/state", "/p.json")).not.toContain("--timeout");
   });
+  test("a snapshot gets the startup budget: a lease's first iOS snapshot starts XCTest", () => {
+    const args = remoteArgs(["snapshot", "-i"], info, "/state", "/p.json");
+    expect(args.slice(0, 4)).toEqual(["snapshot", "-i", "--timeout", "300000"]);
+  });
   test("readiness waits for the newly registered tunnel without replaying commands", async () => {
     const probes: string[] = [];
     const result = await waitForRemote(info, {

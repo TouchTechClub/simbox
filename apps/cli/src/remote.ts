@@ -12,6 +12,13 @@ import { connectForArgs, probeRemote, refreshRun, waitForRemote } from "./runs.j
 
 export const STARTUP_TIMEOUT_MS = 300_000;
 
+/**
+ * Commands that can wait on a cold device. A lease's first iOS `snapshot`
+ * starts agent-device's XCTest runner: 101-164s on hosted Macs, past its 90s
+ * default client budget.
+ */
+const STARTUP_COMMANDS = new Set(["open", "boot", "prepare", "snapshot"]);
+
 export function remoteArgs(
   args: string[],
   info: ConnectInfo,
@@ -25,7 +32,7 @@ export function remoteArgs(
   const separator = args.indexOf("--");
   const result = separator < 0 ? [...args] : args.slice(0, separator);
   const tail = separator < 0 ? [] : args.slice(separator);
-  if (["open", "boot", "prepare"].includes(args[0] ?? "") && !hasFlag(args, "--timeout")) {
+  if (STARTUP_COMMANDS.has(args[0] ?? "") && !hasFlag(args, "--timeout")) {
     result.push("--timeout", String(STARTUP_TIMEOUT_MS));
   }
   if (!hasFlag(args, "--session")) result.push("--session", sessionName(info.runId, holder));

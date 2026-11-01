@@ -94,6 +94,7 @@ test("Simlock warms only the run's target and caps leases at the run's devices",
   expect(ios["lease.maxPerRequester"]).toBe("3");
   expect(ios["update.check"]).toBe("false");
   expect(ios["capabilities.agent-device.enabled"]).toBe("true");
+  expect(ios["capabilities.agent-device.leaseTtlCapMs"]).toBe("1800000");
   expect(ios["android.emulator.headless"]).toBeUndefined();
   expect(ios["capacity.config.limits.ios.maxDevices"]).toBe("4");
   expect(ios["ios.defaultMode"]).toBe("slim");

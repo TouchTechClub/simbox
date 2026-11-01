@@ -272,6 +272,12 @@ export function createSimlock(bins: SimlockBins) {
       }
     },
 
+    /** End every lease, as the operator; only before clients can connect. */
+    async releaseAll(): Promise<void> {
+      const res = await simlock(["release", "--all", "--yes"], 60_000);
+      if (res.code !== 0) warn(`simlock release --all exited ${res.code}`);
+    },
+
     /** A fresh agent token for this run's clients. The caller masks it. */
     async createAgentToken(label: string): Promise<string> {
       const res = await simlock(["token", "create", "--role", "agent", "--label", label]);
@@ -301,10 +307,17 @@ export function agentDeviceProfile(home = Bun.env.HOME || homedir()): string {
 }
 
 /**
+ * The warm-up snapshot's budget. It builds and starts the XCTest runner: 101s
+ * for an iPhone 17e on iOS 27.0, 164s on iOS 26.5, and past 270s for an iPhone
+ * Duo on iOS 27.1. A client that gives up does not stop the build, so the
+ * `close` behind it times out too and the lease is left held.
+ */
+const WARM_UP_SNAPSHOT_MS = 15 * 60_000;
+
+/**
  * Open, inspect and release one device through the local daemon before the
- * run goes live. On iOS this builds the XCTest runner; the first snapshot on a
- * fresh lease then took 164s on a hosted Mac, past `snapshot`'s 90s default
- * client budget, so it passes `--timeout` (which sets that budget).
+ * run goes live. On iOS this builds the XCTest runner, so the snapshot passes
+ * `--timeout` (which sets agent-device's 90s default client budget).
  */
 export async function selfTest(agentDevice: string, platform: DevicePlatform): Promise<void> {
   const session = ["--session", "simbox-warmup"];
@@ -323,7 +336,11 @@ export async function selfTest(agentDevice: string, platform: DevicePlatform): P
         : ["open", "--platform", "android"],
       300_000,
     );
-    await step("snapshot", ["snapshot", "--timeout", "270000"], 300_000);
+    await step(
+      "snapshot",
+      ["snapshot", "--timeout", String(WARM_UP_SNAPSHOT_MS)],
+      WARM_UP_SNAPSHOT_MS + 30_000,
+    );
   } finally {
     await step("close", ["close"], 120_000).catch((err) => warn(String(err)));
   }

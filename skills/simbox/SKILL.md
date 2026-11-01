@@ -80,8 +80,8 @@ simbox exec close --platform android       # release; Simlock wipes the device
 ```
 
 For iOS, open `com.apple.Preferences` first and install the simulator `.app`
-build, not a device IPA. A lease idle for 5 minutes expires and its device is
-wiped. `exec devices` is unsupported; use `simbox devices list`.
+build, not a device IPA. A lease idle for 30 minutes expires and its device is
+wiped. `exec devices` shows only your leased devices.
 Check `agent-device help <command>` when unsure. Take a fresh snapshot after
 navigation; old refs may be invalid.
 

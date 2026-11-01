@@ -92,7 +92,7 @@ export function connectFlow(
   );
   out.write("  exec supplies auth and allows 5 minutes for a cold boot.\n\n");
   out.write(
-    `  Send a command at least every 5 minutes while you need the device: an idle lease expires and Simlock erases the device.\n\n`,
+    `  A lease idle for 30 minutes expires and Simlock erases the device.\n\n`,
   );
   out.write(pc.dim("  manual connect (the profile holds the run's token):\n"));
   out.write(

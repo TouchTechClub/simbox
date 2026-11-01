@@ -56,10 +56,11 @@ read-only or absolute commands (`devices`, `snapshot`, `screenshot`, `fold`,
 `orientation`, `session`, `appstate`, `apps`, `get`, `is`) are retried, up to twice, when the
 tunnel drops.
 
-Each command renews the session's lease. agent-device fixes that lease at five
-minutes, so a session idle for longer loses its device, and Simlock wipes it.
-`agent-device devices` is not available through Simlock; `simbox devices list`
-shows what a runner offers. To use plain `agent-device`, save the run's profile
+Each command renews the session's lease. A session idle for 30 minutes loses
+its device, and Simlock wipes it (agent-device asks for five minutes; the
+runner patches Simlock to hold it for 30). `exec devices` lists only this run's
+leased devices, so it is empty before `open`; `simbox devices list` shows what
+a runner offers. To use plain `agent-device`, save the run's profile
 from the dashboard (or `simbox sim`'s output) and run
 `agent-device connect --remote-config <file> --session <name>` once; Simlock
 refuses the `--daemon-base-url` and token flags on their own.
@@ -76,7 +77,9 @@ indexing and raises cloudflared's priority. A device that does not warm, or a
 failed self-test, fails the run. iOS 18.5 and later simulators run in Simlock's slim
 mode, which turns off background services an app test rarely needs (Siri,
 search, iCloud sync, widgets and similar). The runner also raises Simlock's
-fixed iOS boot and `simctl` timeouts, which hosted Macs cannot meet. Android runs on Linux and never waits for iOS. iOS runs
+fixed iOS boot and `simctl` timeouts, which hosted Macs cannot meet. These
+patches (`SIMLOCK_PATCHES`) must match the pinned Simlock exactly, so a bump
+that moves one fails the run rather than silently dropping it. Android runs on Linux and never waits for iOS. iOS runs
 default to GitHub's Xcode 27 image (`xcode-27`, a public preview) and use its
 newest release Xcode; `--runner macos-latest` gives Xcode 26. A manual Actions
 dispatch with empty `runner_labels` still uses `macos-latest`.

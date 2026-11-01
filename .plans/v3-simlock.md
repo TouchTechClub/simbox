@@ -321,9 +321,24 @@ com.apple.Preferences`, then `snapshot`), not just boot the device.
   134s+ against Simlock's fixed 120s, and `simctl list` outlasted 30s. A priming boot did not help
   (every boot is slow, not just the first). The runner patches those constants in the pinned build
   (`SIMLOCK_PATCHES`) and enables slim mode on iOS 18.5+. Ask upstream to make them configurable.
-- **Lease TTL is fixed at 5 minutes** by agent-device's proxy lease client (0.21.35); each command
-  renews it. An idle session loses its device and Simlock wipes it. Raise upstream.
-- **`agent-device devices` is refused by Simlock's front**; `simbox devices list` covers it.
-- **Still unverified:** the foldable alias (`7.6in Foldable`); whether Simlock's iOS stream is
-  already rotated for landscape (the panel still applies its own rotation); `install` before the
-  first `open`.
+- **Lease TTL.** agent-device (0.21.35) asks for a fixed 5-minute proxy lease, renewed only by
+  commands, so an idle session lost its device. The client is the user's install, so the runner
+  patches Simlock's front to use `capabilities.agent-device.leaseTtlCapMs` (30 minutes) as the
+  TTL. Verified: a lease idle for 6.5 minutes kept its id and app; the next command renewed it.
+  Raise upstream (a client-chosen TTL, or a front floor).
+- **`devices` through Simlock.** agent-device asks for streamed progress unless `--json` is set,
+  and the front refused that. The runner patches the front to drop the request; verified on
+  Android and iOS 27 (empty before `open`, then only the token's leased device).
+- **iOS on `xcode-27` (iOS 27.0, the default runner).** Live in about 10 minutes. `open` 10-32s;
+  the first `snapshot` on a lease 3s when the self-test already started XCTest, up to 101s
+  otherwise, so `simbox exec snapshot` gets the 5-minute budget. `macos-latest` (iOS 26.5) warms
+  with the patches but its XCTest build can outlast the self-test.
+- **Verified on 2026-11-01:** `install` before the first `open` (Android APK, iOS simulator
+  `.app`); the Android generic 7.6in Foldable (`fold closed|half-open|open`, hinge 15/90/165°);
+  Android landscape (the stream follows the rotation).
+- **iOS landscape in the panel.** Simlock 0.4.0's iOS capture keeps the portrait framebuffer and
+  its input socket always reports `portrait` (`drivers/ios/input/device-input.js`), so a rotated
+  iOS app shows sideways (taps still land on what is shown). Needs Simlock to report the
+  orientation; raise upstream. The panel's own rotation mapping is then unverified in direction.
+- **Still unverified:** the iPhone Duo foldable through Simlock; `simbox sim` ensure through the
+  real API and GitHub App; several devices on one run; Blacksmith runners.

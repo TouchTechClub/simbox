@@ -570,6 +570,9 @@ async function warmUp(simlock: Simlock, agentDevice: string): Promise<void> {
     } catch (err) {
       if (attempt >= SELF_TEST_ATTEMPTS) throw err;
       warn(`${message(err)}; retrying`);
+      // The failed attempt's close wiped its device; an iPhone Duo then took
+      // over 5 minutes to warm again, past the retry's own open budget.
+      await simlock.waitForWarm({ timeoutMs, isStopping: stopping });
     }
   }
   // Releasing the self-test's lease wipes that device; wait until one is warm again.

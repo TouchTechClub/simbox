@@ -18,6 +18,10 @@ changes a CLI session.
 Simlock's input channel has no rotation or text message, so the panel has no
 Rotate button or Android text field. Use `simbox exec` for those.
 
+Landscape: Android's stream follows the rotation. Simlock 0.4.0's iOS stream
+keeps the portrait framebuffer and always reports `portrait`, so a rotated iOS
+app shows sideways in the panel (taps still land on what is shown).
+
 Viewing does not reset the runner idle timer: only leases do. Closing the panel,
 hiding the tab, switching devices, or ending the run closes transports and
 releases held touch/keyboard input where possible. When an agent releases its

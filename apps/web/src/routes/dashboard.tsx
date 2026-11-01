@@ -509,7 +509,7 @@ function RunCard({ run, onPreview }: { run: PublicRun; onPreview?: () => void })
               <TermLine>EOF</TermLine>
               <TermLine>{connectLine}</TermLine>
               <TermLine comment>
-                # a lease idle for 5 minutes expires and its device is wiped
+                # a lease idle for 30 minutes expires and its device is wiped
               </TermLine>
             </Terminal>
             <div className="flex gap-2">

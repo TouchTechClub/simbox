@@ -39,7 +39,7 @@ inputs:
       release this action.yml was rendered for; its sha256 is pinned below, so
       another tag only works with a matching action.yml.
     required: false
-    default: "v0.5.0"
+    default: "v0.6.0"
 runs:
   using: composite
   steps:
@@ -80,10 +80,15 @@ runs:
           if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
             sudo -n chmod 666 /dev/kvm || { echo "Grant the runner user read/write access to /dev/kvm" >&2; exit 1; }
           fi
+          # The emulator links libpulse even with audio off; ubuntu-24.04 images lack it.
+          if ! ldconfig -p 2>/dev/null | grep -q 'libpulse\.so\.0'; then
+            { sudo -n apt-get update -qq && sudo -n apt-get install -y -qq libpulse0 >/dev/null; } \
+              || { echo "Install libpulse0 on the runner (the Android emulator needs it)" >&2; exit 1; }
+          fi
         fi
         case "$(uname -s)-$(uname -m)" in
-          Darwin-arm64) TARBALL=simbox-agent-darwin-arm64.tar.gz; SHA=7e1b9edef739197e70ccc5b824a7cf83ca69d7c47bed268f958c4c238b495a34 ;;
-          Linux-x86_64) TARBALL=simbox-agent-linux-amd64.tar.gz; SHA=a320e2a8c07287da7002b0bd265aa8e92d4d0b2e4bf6f27b0ecb4a72c91a7cb8 ;;
+          Darwin-arm64) TARBALL=simbox-agent-darwin-arm64.tar.gz; SHA=2355bb84d065ab183b79313a79e5c54ec5ea2af1e32b5fc32e36006fb985910b ;;
+          Linux-x86_64) TARBALL=simbox-agent-linux-amd64.tar.gz; SHA=824e47097e5ae8a648d4580bc1080695d14ce9a69cbf4685690c4ae8682ca16d ;;
           *) echo "Unsupported Simbox runner OS/architecture" >&2; exit 1 ;;
         esac
         [[ "$SIMBOX_VERSION" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid version '$SIMBOX_VERSION'" >&2; exit 1; }

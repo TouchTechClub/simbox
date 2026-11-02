@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DevicePlatform, PublicRun, RunSummary } from "../packages/shared/src/index.js";
 import { sessionName, writeRemoteProfile, type ConnectInfo } from "../apps/cli/src/connect.js";
-import { remoteArgs, shouldReplay } from "../apps/cli/src/remote.js";
+import { remoteArgs, replayNotice, shouldReplay } from "../apps/cli/src/remote.js";
 import {
   connect,
   connectForArgs,
@@ -409,6 +409,18 @@ describe("remote commands", () => {
   test("a snapshot gets the startup budget: a lease's first iOS snapshot starts XCTest", () => {
     const args = remoteArgs(["snapshot", "-i"], info, "/state", "/p.json");
     expect(args.slice(0, 4)).toEqual(["snapshot", "-i", "--timeout", "300000"]);
+  });
+  test("an orientation gets the startup budget: a lease's first iOS rotation outlasted 90s", () => {
+    const args = remoteArgs(["orientation", "landscape-left"], info, "/state", "/p.json");
+    expect(args.slice(0, 4)).toEqual(["orientation", "landscape-left", "--timeout", "300000"]);
+  });
+  test("a retry after the client's own timeout says so instead of blaming the tunnel", () => {
+    expect(replayNotice("orientation", "Error: Daemon request timed out", 1)).toBe(
+      "`orientation` timed out; retrying (1/2).\n",
+    );
+    expect(replayNotice("snapshot", "Remote daemon is unavailable", 2)).toBe(
+      "Tunnel dropped during `snapshot`; retrying (2/2).\n",
+    );
   });
   test("readiness waits for the newly registered tunnel without replaying commands", async () => {
     const probes: string[] = [];

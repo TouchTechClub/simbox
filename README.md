@@ -48,13 +48,13 @@ run's device is fixed: changing it (or the runner) needs `--new`.
 `exec` supplies the run's token and refreshes the tunnel URL before **each**
 command. Its session (`simbox-<run>-<agent>`) is stable for the GitHub run, even
 if the tunnel restarts, and separate for each agent sharing the run.
-`open`/`boot`/`prepare`/`snapshot` get a five-minute budget (a lease's first iOS
+`open`/`boot`/`prepare`/`snapshot`/`orientation` get a five-minute budget (a lease's first iOS
 `snapshot` starts agent-device's XCTest runner); override with `--timeout <ms>`. To use several sessions/devices, pass `--session <name>`
 consistently to each command. A run leases at most `maxDevices` devices at once. Simbox never automatically replays device actions
 after a transport failure: inspect with `simbox exec session list` first. Only
 read-only or absolute commands (`devices`, `snapshot`, `screenshot`, `fold`,
 `orientation`, `session`, `appstate`, `apps`, `get`, `is`) are retried, up to twice, when the
-tunnel drops.
+tunnel drops or the command times out.
 
 Each command renews the session's lease. A session idle for 30 minutes loses
 its device, and Simlock wipes it (agent-device asks for five minutes; the

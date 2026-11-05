@@ -15,9 +15,9 @@ export const STARTUP_TIMEOUT_MS = 300_000;
 /**
  * Commands that can wait on a cold device. A lease's first iOS `snapshot`
  * starts agent-device's XCTest runner: 101-164s on hosted Macs, past its 90s
- * default client budget.
+ * default client budget. A lease's first iOS `orientation` outlasted it too.
  */
-const STARTUP_COMMANDS = new Set(["open", "boot", "prepare", "snapshot"]);
+const STARTUP_COMMANDS = new Set(["open", "boot", "prepare", "snapshot", "orientation"]);
 
 export function remoteArgs(
   args: string[],
@@ -64,11 +64,19 @@ const REPLAY_SAFE = new Set([
 const TRANSPORT_ERROR =
   /Remote daemon is unavailable|Daemon request timed out|Failed to read daemon response|fetch failed|ECONNRESET|socket hang up/;
 
+const REPLAY_ATTEMPTS = 3;
+
 export function shouldReplay(args: string[], code: number, output: string): boolean {
   return code !== 0 && REPLAY_SAFE.has(args[0] ?? "") && TRANSPORT_ERROR.test(output);
 }
 
-const REPLAY_ATTEMPTS = 3;
+/** Why a replay is happening: the client's own budget ran out, or the tunnel dropped. */
+export function replayNotice(command: string, output: string, attempt: number): string {
+  const what = /Daemon request timed out/.test(output)
+    ? `\`${command}\` timed out`
+    : `Tunnel dropped during \`${command}\``;
+  return `${what}; retrying (${attempt}/${REPLAY_ATTEMPTS - 1}).\n`;
+}
 
 function hasFlag(args: string[], flag: string): boolean {
   const end = args.indexOf("--");
@@ -110,9 +118,7 @@ export async function cmdExec(args: string[]): Promise<void> {
   let result = await runRemote(bin, args, connected, replaySafe);
   for (let attempt = 1; attempt < REPLAY_ATTEMPTS; attempt++) {
     if (!shouldReplay(args, result.code, result.output)) break;
-    process.stderr.write(
-      `Tunnel dropped during \`${args[0]}\`; retrying (${attempt}/${REPLAY_ATTEMPTS - 1}).\n`,
-    );
+    process.stderr.write(replayNotice(args[0]!, result.output, attempt));
     await sleep(attempt * 5_000);
     if (!(await probeRemote(connected))) {
       const runId = connected.runId;

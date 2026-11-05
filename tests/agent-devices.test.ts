@@ -38,6 +38,27 @@ const phone17 = type("iPhone 17", 4, "iPhone");
 const duo = type("iPhone Duo", 5, "iPhone");
 const watch = type("Apple Watch Series 10", 6, "Apple Watch");
 
+test("iOS runtimes that share a version are one OS (xcode-27 image 20261104)", () => {
+  // The image ships iOS 27.2 twice: the phones and tablets, and the iPhone Duo
+  // alone. Picking by version must not land on the Duo-only one.
+  const duoOnly = {
+    ...runtime("27.2", [duo]),
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-2-duo",
+  };
+  for (const runtimes of [
+    [duoOnly, runtime("27.2", [phone17e, phone17, ipad])],
+    [runtime("27.2", [phone17e, phone17, ipad]), duoOnly],
+  ]) {
+    const catalog = buildIOSCatalog([ipad, phone17e, phone17, duo], runtimes);
+    expect(catalog.os.map((os) => os.version)).toEqual(["27.2"]);
+    expect(catalog.defaults).toEqual({ model: phone17e.identifier, os: "27.2" });
+    const pick = pickDevice(null, catalog);
+    expect(pick.ok && pick.model.name).toBe("iPhone 17e");
+    const foldable = pickDevice({ foldable: true }, catalog);
+    expect(foldable.ok && `${foldable.model.name} ${foldable.os.version}`).toBe("iPhone Duo 27.2");
+  }
+});
+
 test("the iOS catalog lists runtimes newest first and phones before tablets", () => {
   const catalog = buildIOSCatalog(
     [ipad, phone16, phone17e, phone17, duo, watch, type("iPhone 6", 0, "iPhone")],

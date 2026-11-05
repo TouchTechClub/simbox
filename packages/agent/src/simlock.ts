@@ -7,7 +7,7 @@
 import { chmod, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { compareVersions, type DevicePlatform } from "@simbox/shared";
 import { PINS } from "./pins.js";
 import { endGroup, info, relay, startGroup, warn } from "./log.js";
@@ -229,16 +229,67 @@ export function simlockSettings(options: {
   return settings;
 }
 
+/** Simlock events that explain where a warm-up's time went. */
+const TIMELINE_EVENT = /^(daemon|device|warm-pool|component|disk|capacity|lease)\./;
+
+/**
+ * `simlock events` output (one JSON envelope per line) as lines timed from
+ * `origin`: `+12.3s device.ready {"bootDuration":...}`.
+ */
+export function formatTimeline(stdout: string, origin: number): string[] {
+  const lines: string[] = [];
+  for (const raw of stdout.split("\n")) {
+    if (!raw.trim()) continue;
+    let envelope: { timestamp?: unknown; event?: unknown; payload?: unknown };
+    try {
+      envelope = JSON.parse(raw) as typeof envelope;
+    } catch {
+      continue;
+    }
+    if (typeof envelope.event !== "string" || !TIMELINE_EVENT.test(envelope.event)) continue;
+    const at =
+      typeof envelope.timestamp === "number"
+        ? `+${((envelope.timestamp - origin) / 1000).toFixed(1)}s`
+        : "?";
+    const payload = envelope.payload === undefined ? "" : JSON.stringify(envelope.payload);
+    lines.push(`${at} ${envelope.event}${payload ? ` ${payload.slice(0, 240)}` : ""}`);
+  }
+  return lines;
+}
+
+/** Where agent-device keeps its Apple runner builds (the action caches it). */
+export function appleRunnerDerived(home = Bun.env.HOME || homedir()): string {
+  return join(home, ".agent-device", "apple-runner", "derived");
+}
+
+/** Runner builds already on disk, by agent-device's per-build metadata file. */
+export async function cachedRunnerBuilds(derived = appleRunnerDerived()): Promise<number> {
+  const entries = await readdir(derived, { recursive: true }).catch(() => [] as string[]);
+  return entries.filter((entry) => basename(entry) === ".agent-device-runner-cache.json").length;
+}
+
 export function createSimlock(bins: SimlockBins) {
   const simlock = (args: string[], timeoutMs = 60_000) =>
     run([bins.simlock, ...args], { timeoutMs });
+  let startedAt = Date.now();
+  /** Why the last status read failed; empty after a good read. */
+  let statusProblem = "";
 
   async function status(): Promise<SimlockStatus | null> {
+    const started = Date.now();
     const res = await simlock(["status", "--json"], 20_000);
-    if (res.code !== 0) return null;
+    const took = `${Math.round((Date.now() - started) / 1000)}s`;
+    if (res.code !== 0) {
+      const detail = (res.stderr || res.stdout).trim().split("\n").pop()?.slice(0, 160) ?? "";
+      statusProblem = `exit ${res.code} after ${took}${detail ? `: ${detail}` : ""}`;
+      return null;
+    }
     try {
-      return JSON.parse(res.stdout) as SimlockStatus;
+      const parsed = JSON.parse(res.stdout) as SimlockStatus;
+      statusProblem = "";
+      return parsed;
     } catch {
+      statusProblem = `unreadable reply after ${took}`;
       return null;
     }
   }
@@ -265,7 +316,27 @@ export function createSimlock(bins: SimlockBins) {
       info(`warm target: ${JSON.stringify(options.target)}`);
     },
 
+    /**
+     * Simlock's events since the daemon started, timed from its start: where
+     * a warm-up spent its time (catalog, provision, boot, slim, leases).
+     */
+    async timeline(): Promise<void> {
+      const seconds = Math.ceil((Date.now() - startedAt) / 1000) + 5;
+      const res = await simlock(["events", "--since", `${seconds}s`], 30_000);
+      if (res.code !== 0) {
+        warn(`simlock events exited ${res.code}; no warm-up timeline`);
+        return;
+      }
+      startGroup("Simlock timeline (from daemon start)");
+      try {
+        for (const line of formatTimeline(res.stdout, startedAt)) info(line);
+      } finally {
+        endGroup();
+      }
+    },
+
     async start(): Promise<void> {
+      startedAt = Date.now();
       await rm(keepReclaimFile(), { force: true });
       const res = await run([bins.simlock, "daemon", "start"], {
         timeoutMs: 120_000,
@@ -293,7 +364,9 @@ export function createSimlock(bins: SimlockBins) {
         const target = current?.warmPool?.targets[0];
         const line = target
           ? `warm pool: ready ${target.ready}/${target.count}, booting ${target.booting}${target.short ? `, short: ${target.short}` : ""}`
-          : "warm pool: starting";
+          : current
+            ? "warm pool: no target in status yet"
+            : `warm pool: simlock status failed (${statusProblem.replace(/ after \d+s/, "")})`;
         if (line !== last) info(line);
         last = line;
         if (target && target.ready > 0) {

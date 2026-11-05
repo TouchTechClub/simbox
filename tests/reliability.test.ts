@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  cachedRunnerBuilds,
+  formatTimeline,
   iosSlim,
   KEEP_RECLAIM_ENV,
   patchSource,
@@ -12,6 +14,7 @@ import {
   warmReady,
 } from "../packages/agent/src/simlock.js";
 import { hostMismatch, hostPlatform } from "../packages/agent/src/platform.js";
+import { SOCKET_BUFFER_SYSCTLS, socketBufferRaises } from "../packages/agent/src/provision.js";
 import { androidSystemImage, androidDirectories } from "../packages/agent/src/android.js";
 import { WORKFLOW_YAML } from "../packages/shared/src/workflow.js";
 import { dispatchWorkflow } from "../apps/api/src/github.js";
@@ -179,4 +182,44 @@ test("idle counts leases and queued requests, not warm devices", () => {
   expect(warmReady({ warmPool: warm })).toBe(1);
   expect(simlockLoad({ warmPool: warm }).leases).toBe(0);
   expect(warmReady({})).toBe(0);
+});
+
+test("the warm-up timeline keeps boot events, timed from the daemon start", () => {
+  const origin = 1_000_000;
+  const events = [
+    { timestamp: origin + 1_500, event: "daemon.started", payload: {} },
+    { timestamp: origin + 2_000, event: "queue.changed", payload: { depth: 0 } },
+    { timestamp: origin + 190_000, event: "device.provisioned", payload: { deviceId: "d1" } },
+    { timestamp: origin + 223_400, event: "device.ready", payload: { bootDuration: 33_000 } },
+  ];
+  const stdout = `${events.map((event) => JSON.stringify(event)).join("\n")}\nnot json\n`;
+  expect(formatTimeline(stdout, origin)).toEqual([
+    "+1.5s daemon.started {}",
+    '+190.0s device.provisioned {"deviceId":"d1"}',
+    '+223.4s device.ready {"bootDuration":33000}',
+  ]);
+});
+
+test("socket buffers are raised for cloudflared, never lowered", () => {
+  const mac = SOCKET_BUFFER_SYSCTLS.darwin!;
+  expect(socketBufferRaises(mac, { "kern.ipc.maxsockbuf": 8_388_608 })).toEqual([
+    "kern.ipc.maxsockbuf=16777216",
+  ]);
+  expect(socketBufferRaises(mac, { "kern.ipc.maxsockbuf": 33_554_432 })).toEqual([]);
+  const linux = SOCKET_BUFFER_SYSCTLS.linux!;
+  expect(socketBufferRaises(linux, { "net.core.rmem_max": 212_992 })).toEqual([
+    "net.core.rmem_max=7500000",
+    "net.core.wmem_max=7500000",
+  ]);
+  expect(SOCKET_BUFFER_SYSCTLS.win32).toBeUndefined();
+});
+
+test("cached Apple runner builds are counted by agent-device's metadata file", async () => {
+  const derived = mkdtempSync(join(tmpdir(), "simbox-derived-"));
+  expect(await cachedRunnerBuilds(join(derived, "missing"))).toBe(0);
+  for (const build of ["cache-0123456789abcdef", "cache-fedcba9876543210"]) {
+    mkdirSync(join(derived, "ios-simulator", build, "Build"), { recursive: true });
+    writeFileSync(join(derived, "ios-simulator", build, ".agent-device-runner-cache.json"), "{}");
+  }
+  expect(await cachedRunnerBuilds(derived)).toBe(2);
 });

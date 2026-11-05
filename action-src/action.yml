@@ -104,6 +104,20 @@ runs:
           echo "SIMBOX_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
         fi
 
+    # iOS: agent-device builds its XCTest runner on every fresh Mac (about
+    # 5 minutes on a hosted one). Its builds are keyed by Xcode and runner
+    # source, not by device, so restore the newest set this repo saved.
+    - name: Restore Apple runner cache
+      id: runner_cache
+      if: runner.os == 'macOS' && inputs.step != 'prepare' && inputs.step != 'serve'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.agent-device/apple-runner/derived
+        key: simbox-apple-runner-${{ runner.arch }}-${{ inputs.version }}-restore
+        restore-keys: |
+          simbox-apple-runner-${{ runner.arch }}-${{ inputs.version }}-
+          simbox-apple-runner-${{ runner.arch }}-
+
     - name: Start simbox-agent
       if: inputs.step == 'start'
       shell: bash
@@ -159,6 +173,43 @@ runs:
           fi
           sleep 1
         done
+
+    # Save once the start step's self-test has built (or reused) the runner,
+    # and only when the set of builds changed: keyed by each build's
+    # .xctestrun, which changes only when agent-device rebuilds.
+    - name: Check Apple runner cache
+      id: runner_cache_key
+      if: runner.os == 'macOS' && inputs.step == 'start'
+      shell: bash
+      env:
+        MATCHED: ${{ steps.runner_cache.outputs.cache-matched-key }}
+        PREFIX: simbox-apple-runner-${{ runner.arch }}-${{ inputs.version }}-
+      run: |
+        set -uo pipefail
+        DERIVED="$HOME/.agent-device/apple-runner/derived"
+        ID=$(cd "$DERIVED" 2>/dev/null && find . -path '*/cache-*' -name '*.xctestrun' -type f | sort |
+          while IFS= read -r f; do printf '%s ' "$f"; shasum -a 256 < "$f"; done)
+        if [[ -z "$ID" ]]; then
+          echo "No Apple runner build to cache."
+          echo "save=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        KEY="$PREFIX$(printf '%s' "$ID" | shasum -a 256 | cut -c1-16)"
+        if [[ "$KEY" == "$MATCHED" ]]; then
+          echo "Apple runner cache unchanged ($KEY)."
+          echo "save=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "Apple runner cache changed; saving $KEY."
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          echo "save=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Save Apple runner cache
+      if: steps.runner_cache_key.outputs.save == 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.agent-device/apple-runner/derived
+        key: ${{ steps.runner_cache_key.outputs.key }}
 
     - name: Serve devices
       if: inputs.step == 'serve'

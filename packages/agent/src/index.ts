@@ -32,7 +32,7 @@ import pkg from "../package.json" with { type: "json" };
 import { addMask, error, info, warn } from "./log.js";
 import { childEnv, pumpLines, setSecretFilter } from "./proc.js";
 import type { ChildProc } from "./proc.js";
-import { installCloudflared } from "./provision.js";
+import { installCloudflared, raiseSocketBuffers } from "./provision.js";
 import { ApiClient, HttpError, runIsOver } from "./api.js";
 import { waitForAuthoritativeDns } from "./dns.js";
 import { createIOSAdapter, quietHost, raisePriority } from "./ios.js";
@@ -46,6 +46,7 @@ import {
   type PlatformAdapter,
 } from "./platform.js";
 import {
+  cachedRunnerBuilds,
   createSimlock,
   installSimlock,
   selfTest,
@@ -562,13 +563,30 @@ async function supervise(): Promise<never> {
 
 /** Warm the device and prove it answers agent-device, retrying once. */
 async function warmUp(simlock: Simlock, agentDevice: string): Promise<void> {
+  try {
+    await warmUpSteps(simlock, agentDevice);
+  } finally {
+    await simlock.timeline().catch((err) => warn(`no warm-up timeline: ${message(err)}`));
+  }
+}
+
+async function warmUpSteps(simlock: Simlock, agentDevice: string): Promise<void> {
   const timeoutMs = WARM_TIMEOUT_MS[state.platform];
   const stopping = () => state.shuttingDown;
   await simlock.waitForWarm({ timeoutMs, isStopping: stopping });
+  if (state.platform === "ios") {
+    const builds = await cachedRunnerBuilds();
+    info(
+      builds > 0
+        ? `Apple runner: ${builds} cached build(s) restored; agent-device reuses a matching one`
+        : "Apple runner: no cached build; the self-test builds it",
+    );
+  }
   for (let attempt = 1; ; attempt++) {
+    const started = Date.now();
     try {
       await selfTest(agentDevice, state.platform);
-      info("warm-up self-test passed");
+      info(`warm-up self-test passed in ${Math.round((Date.now() - started) / 1000)}s`);
       break;
     } catch (err) {
       if (attempt >= SELF_TEST_ATTEMPTS) throw err;
@@ -659,6 +677,7 @@ async function main(): Promise<void> {
     adapter.prepare(choice),
     installSimlock(),
     installCloudflared(),
+    raiseSocketBuffers(),
   ]);
   state.cloudflaredBin = cloudflaredBin;
 

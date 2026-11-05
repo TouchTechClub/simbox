@@ -1,6 +1,6 @@
 {
   "name": "@simbox/agent",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "simbox-agent — in-runner agent that runs a standalone Simlock daemon behind the run's Cloudflare tunnel on a GitHub Actions runner",
   "type": "module",
   "scripts": {

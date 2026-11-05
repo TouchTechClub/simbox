@@ -577,12 +577,15 @@ async function warmUp(simlock: Simlock, agentDevice: string): Promise<void> {
       // too), which blocks a replacement device for the lease's 30 minutes.
       // Releasing wipes the device; an iPhone Duo then took over 5 minutes to
       // warm again, past the retry's own open budget.
+      await simlock.clearKeep();
       await simlock.releaseAll();
       await simlock.waitForWarm({ timeoutMs, isStopping: stopping });
     }
   }
-  // Releasing the self-test's lease wipes that device; wait until one is warm again.
+  // On iOS the passing self-test's release keeps its device booted, so this
+  // returns at once; Android reclaims (and a stuck close) still need a wait.
   await simlock.waitForWarm({ timeoutMs, isStopping: stopping });
+  await simlock.clearKeep();
 }
 
 async function main(): Promise<void> {

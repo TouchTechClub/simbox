@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   iosSlim,
+  KEEP_RECLAIM_ENV,
   patchSource,
+  SIMLOCK_PATCHES,
   simlockLoad,
   simlockSettings,
   warmReady,
@@ -129,6 +134,39 @@ test("Simlock timeout patches are exact and idempotent", () => {
   expect(patched).toBe(`a\n${to}\nb`);
   expect(patchSource(patched, from, to)).toBe(patched);
   expect(() => patchSource("const BOOTSTATUS_TIMEOUT_MS = 90_000;", from, to)).toThrow("not found");
+});
+
+test("the keep file spares one iOS reclaim, then erases resume", async () => {
+  const keep = SIMLOCK_PATCHES.find((patch) => patch.to.includes(KEEP_RECLAIM_ENV))!;
+  // The reclaim body as Simlock 0.4.0's iOS driver has it, after the patch.
+  const Driver = new Function(
+    "COMMAND_TIMEOUT_MS",
+    `return class {
+      calls = [];
+      async #shutdown(udid) { this.calls.push("shutdown " + udid); }
+      async #simctl(args) { this.calls.push(args.join(" ")); }
+      async reclaim(device) {
+        const iosDriverData = (d) => d;
+${patchSource(keep.from, keep.from, keep.to)}
+        return { state: "shutdown", strategy: "erase" };
+      }
+    };`,
+  )(30_000);
+  const file = join(mkdtempSync(join(tmpdir(), "simbox-keep-")), "keep");
+  const previous = process.env[KEEP_RECLAIM_ENV];
+  process.env[KEEP_RECLAIM_ENV] = file;
+  try {
+    const driver = new Driver();
+    expect(await driver.reclaim({ udid: "A" })).toEqual({ state: "shutdown", strategy: "erase" });
+    writeFileSync(file, "");
+    expect(await driver.reclaim({ udid: "B" })).toEqual({ state: "ready", strategy: "snapshot" });
+    expect(existsSync(file)).toBe(false);
+    expect(await driver.reclaim({ udid: "C" })).toEqual({ state: "shutdown", strategy: "erase" });
+    expect(driver.calls).toEqual(["shutdown A", "erase A", "shutdown C", "erase C"]);
+  } finally {
+    if (previous === undefined) delete process.env[KEEP_RECLAIM_ENV];
+    else process.env[KEEP_RECLAIM_ENV] = previous;
+  }
 });
 
 test("idle counts leases and queued requests, not warm devices", () => {

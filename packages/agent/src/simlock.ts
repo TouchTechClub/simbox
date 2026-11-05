@@ -4,10 +4,10 @@
  * installs it, configures one warm target, waits for it, mints the agent
  * token clients use, and reads its status for heartbeats and idle exit.
  */
-import { chmod, readdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { compareVersions, type DevicePlatform } from "@simbox/shared";
 import { PINS } from "./pins.js";
 import { endGroup, info, relay, startGroup, warn } from "./log.js";
@@ -89,6 +89,18 @@ export async function installSimlock(): Promise<SimlockBins> {
   }
 }
 
+/** Names the keep file for the patched Simlock daemon (see SIMLOCK_PATCHES). */
+export const KEEP_RECLAIM_ENV = "SIMBOX_KEEP_RECLAIM_FILE";
+
+/**
+ * While this file exists, the next iOS reclaim keeps its device booted instead
+ * of erasing it, and deletes the file. The agent creates it only after a
+ * passing self-test, so that lease's release keeps the warm device.
+ */
+export function keepReclaimFile(home = Bun.env.HOME || homedir()): string {
+  return join(home, ".simlock", "simbox-keep-next-reclaim");
+}
+
 /** How long an agent-device lease survives without a command. */
 export const AGENT_DEVICE_LEASE_TTL_MS = 30 * 60_000;
 
@@ -108,6 +120,11 @@ export const AGENT_DEVICE_LEASE_TTL_MS = 30 * 60_000;
  * - agent-device asks for streamed progress on `devices` unless `--json` is
  *   set, which the front refuses because it filters the answer to the token's
  *   own devices. Drop the request instead; the client reads a plain reply.
+ * - Every iOS simulator reclaim shuts the device down and erases it, so the
+ *   warm-up self-test's release cost a second cold boot (4-5 minutes, more for
+ *   an iPhone Duo) before the run could go live. While the keep file exists,
+ *   the next reclaim consumes it and returns the device booted and ready, the
+ *   way Simlock's own Android snapshot reclaim does. See `keepReclaimFile`.
  */
 export const SIMLOCK_PATCHES: Array<{ file: string; from: string; to: string }> = [
   {
@@ -135,6 +152,21 @@ export const SIMLOCK_PATCHES: Array<{ file: string; from: string; to: string }> 
     from: 'throw refuse("refused: devices does not stream through simlock");',
     to: 'delete check.meta["requestProgress"]; check.changed = true;',
   },
+  {
+    file: "drivers/ios/index.js",
+    from: [
+      "        const data = iosDriverData(device);",
+      "        await this.#shutdown(data.udid);",
+      '        await this.#simctl(["erase", data.udid], COMMAND_TIMEOUT_MS);',
+    ].join("\n"),
+    to: [
+      "        const data = iosDriverData(device);",
+      `        if (await import("node:fs").then((fs) => { try { fs.unlinkSync(process.env.${KEEP_RECLAIM_ENV}); return true; } catch { return false; } }))`,
+      '            return { state: "ready", strategy: "snapshot" };',
+      "        await this.#shutdown(data.udid);",
+      '        await this.#simctl(["erase", data.udid], COMMAND_TIMEOUT_MS);',
+    ].join("\n"),
+  },
 ];
 
 export function patchSource(source: string, from: string, to: string): string {
@@ -149,7 +181,7 @@ async function patchSimlock(dist: string): Promise<void> {
     await writeFile(path, patchSource(await readFile(path, "utf8"), from, to));
   }
   info(
-    `patched Simlock: iOS timeouts, agent-device lease TTL and devices (${SIMLOCK_PATCHES.length} edits)`,
+    `patched Simlock: iOS timeouts, agent-device lease TTL and devices, self-test keep (${SIMLOCK_PATCHES.length} edits)`,
   );
 }
 
@@ -197,16 +229,67 @@ export function simlockSettings(options: {
   return settings;
 }
 
+/** Simlock events that explain where a warm-up's time went. */
+const TIMELINE_EVENT = /^(daemon|device|warm-pool|component|disk|capacity|lease)\./;
+
+/**
+ * `simlock events` output (one JSON envelope per line) as lines timed from
+ * `origin`: `+12.3s device.ready {"bootDuration":...}`.
+ */
+export function formatTimeline(stdout: string, origin: number): string[] {
+  const lines: string[] = [];
+  for (const raw of stdout.split("\n")) {
+    if (!raw.trim()) continue;
+    let envelope: { timestamp?: unknown; event?: unknown; payload?: unknown };
+    try {
+      envelope = JSON.parse(raw) as typeof envelope;
+    } catch {
+      continue;
+    }
+    if (typeof envelope.event !== "string" || !TIMELINE_EVENT.test(envelope.event)) continue;
+    const at =
+      typeof envelope.timestamp === "number"
+        ? `+${((envelope.timestamp - origin) / 1000).toFixed(1)}s`
+        : "?";
+    const payload = envelope.payload === undefined ? "" : JSON.stringify(envelope.payload);
+    lines.push(`${at} ${envelope.event}${payload ? ` ${payload.slice(0, 240)}` : ""}`);
+  }
+  return lines;
+}
+
+/** Where agent-device keeps its Apple runner builds (the action caches it). */
+export function appleRunnerDerived(home = Bun.env.HOME || homedir()): string {
+  return join(home, ".agent-device", "apple-runner", "derived");
+}
+
+/** Runner builds already on disk, by agent-device's per-build metadata file. */
+export async function cachedRunnerBuilds(derived = appleRunnerDerived()): Promise<number> {
+  const entries = await readdir(derived, { recursive: true }).catch(() => [] as string[]);
+  return entries.filter((entry) => basename(entry) === ".agent-device-runner-cache.json").length;
+}
+
 export function createSimlock(bins: SimlockBins) {
   const simlock = (args: string[], timeoutMs = 60_000) =>
     run([bins.simlock, ...args], { timeoutMs });
+  let startedAt = Date.now();
+  /** Why the last status read failed; empty after a good read. */
+  let statusProblem = "";
 
   async function status(): Promise<SimlockStatus | null> {
+    const started = Date.now();
     const res = await simlock(["status", "--json"], 20_000);
-    if (res.code !== 0) return null;
+    const took = `${Math.round((Date.now() - started) / 1000)}s`;
+    if (res.code !== 0) {
+      const detail = (res.stderr || res.stdout).trim().split("\n").pop()?.slice(0, 160) ?? "";
+      statusProblem = `exit ${res.code} after ${took}${detail ? `: ${detail}` : ""}`;
+      return null;
+    }
     try {
-      return JSON.parse(res.stdout) as SimlockStatus;
+      const parsed = JSON.parse(res.stdout) as SimlockStatus;
+      statusProblem = "";
+      return parsed;
     } catch {
+      statusProblem = `unreadable reply after ${took}`;
       return null;
     }
   }
@@ -233,8 +316,32 @@ export function createSimlock(bins: SimlockBins) {
       info(`warm target: ${JSON.stringify(options.target)}`);
     },
 
+    /**
+     * Simlock's events since the daemon started, timed from its start: where
+     * a warm-up spent its time (catalog, provision, boot, slim, leases).
+     */
+    async timeline(): Promise<void> {
+      const seconds = Math.ceil((Date.now() - startedAt) / 1000) + 5;
+      const res = await simlock(["events", "--since", `${seconds}s`], 30_000);
+      if (res.code !== 0) {
+        warn(`simlock events exited ${res.code}; no warm-up timeline`);
+        return;
+      }
+      startGroup("Simlock timeline (from daemon start)");
+      try {
+        for (const line of formatTimeline(res.stdout, startedAt)) info(line);
+      } finally {
+        endGroup();
+      }
+    },
+
     async start(): Promise<void> {
-      const res = await simlock(["daemon", "start"], 120_000);
+      startedAt = Date.now();
+      await rm(keepReclaimFile(), { force: true });
+      const res = await run([bins.simlock, "daemon", "start"], {
+        timeoutMs: 120_000,
+        env: { [KEEP_RECLAIM_ENV]: keepReclaimFile() },
+      });
       for (const line of `${res.stdout}\n${res.stderr}`.split("\n"))
         if (line.trim()) relayFiltered("simlock", line);
       if (res.code !== 0) throw new Error(`simlock daemon start exited ${res.code}`);
@@ -257,7 +364,9 @@ export function createSimlock(bins: SimlockBins) {
         const target = current?.warmPool?.targets[0];
         const line = target
           ? `warm pool: ready ${target.ready}/${target.count}, booting ${target.booting}${target.short ? `, short: ${target.short}` : ""}`
-          : "warm pool: starting";
+          : current
+            ? "warm pool: no target in status yet"
+            : `warm pool: simlock status failed (${statusProblem.replace(/ after \d+s/, "")})`;
         if (line !== last) info(line);
         last = line;
         if (target && target.ready > 0) {
@@ -272,6 +381,11 @@ export function createSimlock(bins: SimlockBins) {
         }
         await Bun.sleep(5000);
       }
+    },
+
+    /** Drop an unconsumed keep file, so no later release skips its wipe. */
+    async clearKeep(): Promise<void> {
+      await rm(keepReclaimFile(), { force: true });
     },
 
     /** End every lease, as the operator; only before clients can connect. */
@@ -319,7 +433,9 @@ const WARM_UP_SNAPSHOT_MS = 15 * 60_000;
 /**
  * Open, inspect and release one device through the local daemon before the
  * run goes live. On iOS this builds the XCTest runner, so the snapshot passes
- * `--timeout` (which sets agent-device's 90s default client budget).
+ * `--timeout` (which sets agent-device's 90s default client budget). Once it
+ * passes on iOS, the keep file makes the release return the device booted,
+ * runner installed, instead of erasing it; a failed test still wipes it.
  */
 export async function selfTest(agentDevice: string, platform: DevicePlatform): Promise<void> {
   const session = ["--session", "simbox-warmup"];
@@ -343,6 +459,7 @@ export async function selfTest(agentDevice: string, platform: DevicePlatform): P
       ["snapshot", "--timeout", String(WARM_UP_SNAPSHOT_MS)],
       WARM_UP_SNAPSHOT_MS + 30_000,
     );
+    if (platform === "ios") await writeFile(keepReclaimFile(), "");
   } finally {
     await step("close", ["close"], 120_000).catch((err) => warn(String(err)));
   }

@@ -41,6 +41,33 @@ export async function raisePriority(pid: number, name: string): Promise<void> {
 }
 
 /**
+ * One runtime per version, supporting every device type any of them does.
+ * Images can ship a version twice (xcode-27 has iOS 27.2 for the phones and
+ * tablets and again for the iPhone Duo alone); the catalog and its picker
+ * name an OS by version, so a split one can hide the default phone.
+ */
+export function mergeRuntimesByVersion(runtimes: Runtime[]): Runtime[] {
+  const byVersion = new Map<string, Runtime>();
+  for (const runtime of runtimes) {
+    const seen = byVersion.get(runtime.version);
+    if (!seen) {
+      byVersion.set(runtime.version, runtime);
+      continue;
+    }
+    // A runtime that lists no support runs anything, so the merge does too.
+    const types =
+      seen.supportedDeviceTypes && runtime.supportedDeviceTypes
+        ? [...seen.supportedDeviceTypes, ...runtime.supportedDeviceTypes].filter(
+            (type, index, all) => all.findIndex((t) => t.identifier === type.identifier) === index,
+          )
+        : undefined;
+    const { supportedDeviceTypes: _, ...rest } = seen;
+    byVersion.set(runtime.version, types ? { ...rest, supportedDeviceTypes: types } : rest);
+  }
+  return [...byVersion.values()];
+}
+
+/**
  * What an Xcode offers: available iOS runtimes newest first (with the device
  * types each can run), iPhones then iPads newest first, and the default phone
  * on the newest runtime that runs it.
@@ -50,7 +77,9 @@ export function buildIOSCatalog(
   runtimes: Runtime[],
   xcode: string[] = [],
 ): DeviceCatalog {
-  const ios = runtimes.filter(isIOSRuntime).sort((a, b) => compareVersions(b.version, a.version));
+  const ios = mergeRuntimesByVersion(runtimes.filter(isIOSRuntime)).sort((a, b) =>
+    compareVersions(b.version, a.version),
+  );
   if (ios.length === 0) throw new Error("this Xcode has no available iOS simulator runtime");
   const supported = new Set(
     ios.flatMap((runtime) => (runtime.supportedDeviceTypes ?? []).map((type) => type.identifier)),

@@ -187,10 +187,14 @@ runs:
       run: |
         set -uo pipefail
         DERIVED="$HOME/.agent-device/apple-runner/derived"
-        ID=$(cd "$DERIVED" 2>/dev/null && find . -path '*/cache-*' -name '*.xctestrun' -type f | sort |
+        # agent-device writes this metadata once a runner build is complete.
+        ID=$(cd "$DERIVED" 2>/dev/null && find . -name .agent-device-runner-cache.json -type f | sort |
           while IFS= read -r f; do printf '%s ' "$f"; shasum -a 256 < "$f"; done)
         if [[ -z "$ID" ]]; then
-          echo "No Apple runner build to cache."
+          echo "No Apple runner build to cache. What is on disk:"
+          find "$HOME/.agent-device" -maxdepth 5 -not -path '*/Build/*' -not -path '*/logs/*' 2>/dev/null | head -40
+          find "$HOME/.agent-device" "$HOME/.simlock" "${TMPDIR:-/tmp}" \
+            -name .agent-device-runner-cache.json 2>/dev/null | head -10
           echo "save=false" >> "$GITHUB_OUTPUT"
           exit 0
         fi

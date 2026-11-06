@@ -454,12 +454,16 @@ export async function selfTest(agentDevice: string, platform: DevicePlatform): P
         : ["open", "--platform", "android"],
       300_000,
     );
+    // The device booted and opened Settings, so `close` keeps it booted even
+    // if the snapshot fails: that failure is the runner build or the RPC around
+    // it, and an erase costs a full first boot again (7 minutes for a 17e on
+    // iOS 27).
+    if (platform === "ios") await writeFile(keepReclaimFile(), "");
     await step(
       "snapshot",
       ["snapshot", "--timeout", String(WARM_UP_SNAPSHOT_MS)],
       WARM_UP_SNAPSHOT_MS + 30_000,
     );
-    if (platform === "ios") await writeFile(keepReclaimFile(), "");
   } finally {
     await step("close", ["close"], 120_000).catch((err) => warn(String(err)));
   }

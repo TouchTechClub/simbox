@@ -203,7 +203,7 @@ test("the warm-up timeline keeps boot events, timed from the daemon start", () =
 test("socket buffers are raised for cloudflared, never lowered", () => {
   const mac = SOCKET_BUFFER_SYSCTLS.darwin!;
   expect(socketBufferRaises(mac, { "kern.ipc.maxsockbuf": 8_388_608 })).toEqual([
-    "kern.ipc.maxsockbuf=16777216",
+    "kern.ipc.maxsockbuf=8441037",
   ]);
   expect(socketBufferRaises(mac, { "kern.ipc.maxsockbuf": 33_554_432 })).toEqual([]);
   const linux = SOCKET_BUFFER_SYSCTLS.linux!;

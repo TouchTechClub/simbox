@@ -593,11 +593,11 @@ async function warmUpSteps(simlock: Simlock, agentDevice: string): Promise<void>
       warn(`${message(err)}; retrying`);
       // A timed-out attempt can leave its lease held (its close times out
       // too), which blocks a replacement device for the lease's 30 minutes.
-      // Releasing wipes the device; an iPhone Duo then took over 5 minutes to
-      // warm again, past the retry's own open budget.
-      await simlock.clearKeep();
+      // Releasing wipes the device unless it got as far as opening an app
+      // (see selfTest); a wiped iPhone Duo took over 5 minutes to warm again.
       await simlock.releaseAll();
       await simlock.waitForWarm({ timeoutMs, isStopping: stopping });
+      await simlock.clearKeep();
     }
   }
   // On iOS the passing self-test's release keeps its device booted, so this

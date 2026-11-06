@@ -185,14 +185,26 @@ test("a request naming no device leases the warm model on the run's OS", () => {
   ) as (device?: string, klass?: string, osVersion?: string) => Record<string, string>;
   const saved = { ...process.env };
   try {
-    Object.assign(process.env, defaultDeviceEnv({ platform: "ios", model: "iPhone Duo", count: 1 }, "27.2"));
+    Object.assign(
+      process.env,
+      defaultDeviceEnv({ platform: "ios", model: "iPhone Duo", count: 1 }, "27.2"),
+    );
     expect(plan()).toEqual({ platform: "ios", model: "iPhone Duo", osVersion: "27.2" });
     // What the client names still wins.
-    expect(plan(undefined, undefined, "26.5")).toEqual({ platform: "ios", model: "iPhone Duo", osVersion: "26.5" });
+    expect(plan(undefined, undefined, "26.5")).toEqual({
+      platform: "ios",
+      model: "iPhone Duo",
+      osVersion: "26.5",
+    });
     expect(plan("iPhone 17 Pro")).toEqual({ platform: "ios", model: "iPhone 17 Pro" });
     expect(plan(undefined, "tablet")).toEqual({ platform: "ios", class: "tablet" });
     // A pinned target OS beats the chosen one.
-    expect(defaultDeviceEnv({ platform: "ios", model: "iPhone 17e", osVersion: "26.5", count: 1 }, "27.0")).toEqual({
+    expect(
+      defaultDeviceEnv(
+        { platform: "ios", model: "iPhone 17e", osVersion: "26.5", count: 1 },
+        "27.0",
+      ),
+    ).toEqual({
       SIMBOX_DEFAULT_MODEL: "iPhone 17e",
       SIMBOX_DEFAULT_OS: "26.5",
     });

@@ -46,11 +46,11 @@ function cloudflaredAssets(tag: string): CloudflaredAsset[] {
  * Socket buffer limits cloudflared needs. It opens a UDP socket even over
  * http2 and asks quic-go for a 7 MiB receive buffer, which hosted Macs cap at
  * 6 MiB ("failed to sufficiently increase receive buffer size") and Linux at
- * about 200 KiB. Values from quic-go's UDP buffer guide. macOS rejects much more
- * than its 8 MiB default ("Result too large"), so it gets the guide's 8441037.
+ * about 200 KiB. Values from quic-go's UDP buffer guide. Hosted Macs refuse any
+ * kern.ipc.maxsockbuf above their default ("Result too large", even quic-go's
+ * 8441037), and the tunnel runs over http2, so macOS keeps the warning.
  */
 export const SOCKET_BUFFER_SYSCTLS: Partial<Record<NodeJS.Platform, Record<string, number>>> = {
-  darwin: { "kern.ipc.maxsockbuf": 8_441_037 },
   linux: { "net.core.rmem_max": 7_500_000, "net.core.wmem_max": 7_500_000 },
 };
 

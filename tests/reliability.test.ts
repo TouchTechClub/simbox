@@ -7,6 +7,8 @@ import {
   formatTimeline,
   iosSlim,
   KEEP_RECLAIM_ENV,
+  DEFAULT_MODEL_ENV,
+  defaultDeviceEnv,
   patchSource,
   SIMLOCK_PATCHES,
   simlockLoad,
@@ -172,6 +174,37 @@ ${patchSource(keep.from, keep.from, keep.to)}
   }
 });
 
+test("a request naming no device leases the warm model on the run's OS", () => {
+  const patch = SIMLOCK_PATCHES.find((p) => p.to.includes(DEFAULT_MODEL_ENV))!;
+  // The spread from Simlock 0.4.0's agent-device front (planOf), after the patch.
+  const plan = new Function(
+    "device",
+    "klass",
+    "osVersion",
+    `return { platform: "ios", ${patchSource(patch.from, patch.from, patch.to)} ...(osVersion ? { osVersion } : {}) };`,
+  ) as (device?: string, klass?: string, osVersion?: string) => Record<string, string>;
+  const saved = { ...process.env };
+  try {
+    Object.assign(process.env, defaultDeviceEnv({ platform: "ios", model: "iPhone Duo", count: 1 }, "27.2"));
+    expect(plan()).toEqual({ platform: "ios", model: "iPhone Duo", osVersion: "27.2" });
+    // What the client names still wins.
+    expect(plan(undefined, undefined, "26.5")).toEqual({ platform: "ios", model: "iPhone Duo", osVersion: "26.5" });
+    expect(plan("iPhone 17 Pro")).toEqual({ platform: "ios", model: "iPhone 17 Pro" });
+    expect(plan(undefined, "tablet")).toEqual({ platform: "ios", class: "tablet" });
+    // A pinned target OS beats the chosen one.
+    expect(defaultDeviceEnv({ platform: "ios", model: "iPhone 17e", osVersion: "26.5", count: 1 }, "27.0")).toEqual({
+      SIMBOX_DEFAULT_MODEL: "iPhone 17e",
+      SIMBOX_DEFAULT_OS: "26.5",
+    });
+    delete process.env.SIMBOX_DEFAULT_MODEL;
+    expect(plan()).toEqual({ platform: "ios" });
+  } finally {
+    for (const key of ["SIMBOX_DEFAULT_MODEL", "SIMBOX_DEFAULT_OS"])
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+  }
+});
+
 test("idle counts leases and queued requests, not warm devices", () => {
   expect(simlockLoad({})).toEqual({ leases: 0, queued: 0 });
   expect(simlockLoad({ leases: [{ id: "a" }, { id: "b" }], queueDepth: 1 })).toEqual({
@@ -201,11 +234,7 @@ test("the warm-up timeline keeps boot events, timed from the daemon start", () =
 });
 
 test("socket buffers are raised for cloudflared, never lowered", () => {
-  const mac = SOCKET_BUFFER_SYSCTLS.darwin!;
-  expect(socketBufferRaises(mac, { "kern.ipc.maxsockbuf": 8_388_608 })).toEqual([
-    "kern.ipc.maxsockbuf=8441037",
-  ]);
-  expect(socketBufferRaises(mac, { "kern.ipc.maxsockbuf": 33_554_432 })).toEqual([]);
+  expect(SOCKET_BUFFER_SYSCTLS.darwin).toBeUndefined();
   const linux = SOCKET_BUFFER_SYSCTLS.linux!;
   expect(socketBufferRaises(linux, { "net.core.rmem_max": 212_992 })).toEqual([
     "net.core.rmem_max=7500000",

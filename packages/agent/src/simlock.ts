@@ -101,6 +101,20 @@ export function keepReclaimFile(home = Bun.env.HOME || homedir()): string {
   return join(home, ".simlock", "simbox-keep-next-reclaim");
 }
 
+/**
+ * The warm target's model and OS, for agent-device requests that name no
+ * device (see SIMLOCK_PATCHES). Simlock reads such a request as "any phone",
+ * so on a foldable or tablet run it shut the warm iPhone Duo down and booted an
+ * iPhone 17 for the self-test and for every client's first `open`.
+ */
+export const DEFAULT_MODEL_ENV = "SIMBOX_DEFAULT_MODEL";
+export const DEFAULT_OS_ENV = "SIMBOX_DEFAULT_OS";
+
+/** The daemon env that makes a request naming no device mean the warm one. */
+export function defaultDeviceEnv(target: WarmTarget, osVersion: string): Record<string, string> {
+  return { [DEFAULT_MODEL_ENV]: target.model, [DEFAULT_OS_ENV]: target.osVersion ?? osVersion };
+}
+
 /** How long an agent-device lease survives without a command. */
 export const AGENT_DEVICE_LEASE_TTL_MS = 30 * 60_000;
 
@@ -167,6 +181,13 @@ export const SIMLOCK_PATCHES: Array<{ file: string; from: string; to: string }> 
       '        await this.#simctl(["erase", data.udid], COMMAND_TIMEOUT_MS);',
     ].join("\n"),
   },
+  {
+    file: "agent-device/front/allocate.js",
+    from: "...(device === undefined ? (klass === undefined ? {} : { class: klass }) : { model: device }),",
+    to:
+      `...(device === undefined && klass === undefined && process.env.${DEFAULT_MODEL_ENV} ? { model: process.env.${DEFAULT_MODEL_ENV}, ...(process.env.${DEFAULT_OS_ENV} ? { osVersion: process.env.${DEFAULT_OS_ENV} } : {}) } : ` +
+      "device === undefined ? (klass === undefined ? {} : { class: klass }) : { model: device }),",
+  },
 ];
 
 export function patchSource(source: string, from: string, to: string): string {
@@ -181,7 +202,7 @@ async function patchSimlock(dist: string): Promise<void> {
     await writeFile(path, patchSource(await readFile(path, "utf8"), from, to));
   }
   info(
-    `patched Simlock: iOS timeouts, agent-device lease TTL and devices, self-test keep (${SIMLOCK_PATCHES.length} edits)`,
+    `patched Simlock: iOS timeouts, agent-device lease TTL, devices and default model, self-test keep (${SIMLOCK_PATCHES.length} edits)`,
   );
 }
 
@@ -272,6 +293,7 @@ export function createSimlock(bins: SimlockBins) {
   const simlock = (args: string[], timeoutMs = 60_000) =>
     run([bins.simlock, ...args], { timeoutMs });
   let startedAt = Date.now();
+  let defaultDevice: Record<string, string> = {};
   /** Why the last status read failed; empty after a good read. */
   let statusProblem = "";
 
@@ -313,6 +335,7 @@ export function createSimlock(bins: SimlockBins) {
             `simlock config set ${key} failed (exit ${res.code}): ${res.stderr.trim().slice(-300)}`,
           );
       }
+      defaultDevice = defaultDeviceEnv(options.target, options.osVersion);
       info(`warm target: ${JSON.stringify(options.target)}`);
     },
 
@@ -340,7 +363,7 @@ export function createSimlock(bins: SimlockBins) {
       await rm(keepReclaimFile(), { force: true });
       const res = await run([bins.simlock, "daemon", "start"], {
         timeoutMs: 120_000,
-        env: { [KEEP_RECLAIM_ENV]: keepReclaimFile() },
+        env: { [KEEP_RECLAIM_ENV]: keepReclaimFile(), ...defaultDevice },
       });
       for (const line of `${res.stdout}\n${res.stderr}`.split("\n"))
         if (line.trim()) relayFiltered("simlock", line);

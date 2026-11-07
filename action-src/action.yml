@@ -39,7 +39,7 @@ inputs:
       release this action.yml was rendered for; its sha256 is pinned below, so
       another tag only works with a matching action.yml.
     required: false
-    default: "v0.6.4"
+    default: "v0.6.5"
 runs:
   using: composite
   steps:
@@ -87,8 +87,8 @@ runs:
           fi
         fi
         case "$(uname -s)-$(uname -m)" in
-          Darwin-arm64) TARBALL=simbox-agent-darwin-arm64.tar.gz; SHA=7fe6b81b1bd784b28306eaa68a0eb8cb48932a750436f60148d9c11a3cc1586e ;;
-          Linux-x86_64) TARBALL=simbox-agent-linux-amd64.tar.gz; SHA=858636387e2f90141dba345d44c84f873b558e46c64ab03f90e19efa2066b987 ;;
+          Darwin-arm64) TARBALL=simbox-agent-darwin-arm64.tar.gz; SHA=8b2477ca39ccfbfa03b8b5c301c9ee791bcce3c79c73de51f1f787275bd38087 ;;
+          Linux-x86_64) TARBALL=simbox-agent-linux-amd64.tar.gz; SHA=cb87b7bc8585f8541ac6fcd942af6f3b53a1673a364110d17e941b81a21a88cc ;;
           *) echo "Unsupported Simbox runner OS/architecture" >&2; exit 1 ;;
         esac
         [[ "$SIMBOX_VERSION" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid version '$SIMBOX_VERSION'" >&2; exit 1; }

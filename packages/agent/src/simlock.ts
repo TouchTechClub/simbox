@@ -289,6 +289,39 @@ export async function cachedRunnerBuilds(derived = appleRunnerDerived()): Promis
   return entries.filter((entry) => basename(entry) === ".agent-device-runner-cache.json").length;
 }
 
+/**
+ * agent-device's Apple runner cache decisions (reuse, or rebuild and why),
+ * from the diagnostics it writes under these roots, oldest first.
+ */
+export async function runnerCacheDecisions(
+  roots = [
+    join(Bun.env.HOME || homedir(), ".simlock", "agent-device"),
+    join(Bun.env.HOME || homedir(), ".agent-device", "logs"),
+  ],
+): Promise<string[]> {
+  const found: Array<{ ts: string; line: string }> = [];
+  const seen = new Set<string>();
+  for (const root of roots) {
+    const entries = await readdir(root, { recursive: true }).catch(() => [] as string[]);
+    for (const entry of entries.filter((e) => e.endsWith(".ndjson") || e.endsWith(".log"))) {
+      const text = await readFile(join(root, entry), "utf8").catch(() => "");
+      for (const raw of text.split("\n")) {
+        if (!raw.includes("runner_xctestrun_cache")) continue;
+        try {
+          const event = JSON.parse(raw) as { ts?: string; timestamp?: string; data?: unknown };
+          const line = JSON.stringify(event.data ?? event).slice(0, 600);
+          if (seen.has(line)) continue;
+          seen.add(line);
+          found.push({ ts: String(event.ts ?? event.timestamp ?? ""), line });
+        } catch {
+          // Not JSON: an agent-device text log line.
+        }
+      }
+    }
+  }
+  return found.sort((a, b) => a.ts.localeCompare(b.ts)).map((f) => f.line);
+}
+
 export function createSimlock(bins: SimlockBins) {
   const simlock = (args: string[], timeoutMs = 60_000) =>
     run([bins.simlock, ...args], { timeoutMs });

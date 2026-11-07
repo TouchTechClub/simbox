@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   cachedRunnerBuilds,
+  runnerCacheDecisions,
   formatTimeline,
   iosSlim,
   KEEP_RECLAIM_ENV,
@@ -263,4 +264,24 @@ test("cached Apple runner builds are counted by agent-device's metadata file", a
     writeFileSync(join(derived, "ios-simulator", build, ".agent-device-runner-cache.json"), "{}");
   }
   expect(await cachedRunnerBuilds(derived)).toBe(2);
+});
+
+test("runner cache decisions are read from agent-device diagnostics, oldest first", async () => {
+  const root = mkdtempSync(join(tmpdir(), "simbox-diag-"));
+  mkdirSync(join(root, "sessions", "s", "requests"), { recursive: true });
+  const event = (ts: string, data: object) =>
+    JSON.stringify({ ts, level: "info", phase: "runner_xctestrun_cache", data });
+  writeFileSync(
+    join(root, "sessions", "s", "requests", "a.ndjson"),
+    [
+      event("2026-11-07T03:30:02Z", { action: "rebuild", reason: "artifact_content_mismatch" }),
+      JSON.stringify({ ts: "2026-11-07T03:30:01Z", phase: "other" }),
+      event("2026-11-07T03:30:00Z", { action: "reuse", reason: "reuse_ready" }),
+      "not json runner_xctestrun_cache",
+    ].join("\n"),
+  );
+  expect(await runnerCacheDecisions([root, join(root, "missing")])).toEqual([
+    '{"action":"reuse","reason":"reuse_ready"}',
+    '{"action":"rebuild","reason":"artifact_content_mismatch"}',
+  ]);
 });

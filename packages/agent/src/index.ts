@@ -47,6 +47,7 @@ import {
 } from "./platform.js";
 import {
   cachedRunnerBuilds,
+  runnerCacheDecisions,
   createSimlock,
   installSimlock,
   selfTest,
@@ -566,6 +567,11 @@ async function warmUp(simlock: Simlock, agentDevice: string): Promise<void> {
   try {
     await warmUpSteps(simlock, agentDevice);
   } finally {
+    if (state.platform === "ios") {
+      const decisions = await runnerCacheDecisions().catch(() => []);
+      if (decisions.length === 0) info("Apple runner cache: agent-device logged no cache decision");
+      for (const line of decisions) info(`Apple runner cache decision: ${line}`);
+    }
     await simlock.timeline().catch((err) => warn(`no warm-up timeline: ${message(err)}`));
   }
 }

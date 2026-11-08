@@ -47,13 +47,16 @@ import {
 } from "./platform.js";
 import {
   cachedRunnerBuilds,
+  loadRunnerCacheValidator,
   runnerCacheDecisions,
+  runnerCacheReport,
   createSimlock,
   installSimlock,
   selfTest,
   simlockLoad,
   warmReady,
   type Simlock,
+  type SimlockBins,
   type WarmTarget,
 } from "./simlock.js";
 import { createStage, jobStartedAt } from "./stage.js";
@@ -563,20 +566,36 @@ async function supervise(): Promise<never> {
 // ---------------------------------------------------------------------------
 
 /** Warm the device and prove it answers agent-device, retrying once. */
-async function warmUp(simlock: Simlock, agentDevice: string): Promise<void> {
+async function warmUp(simlock: Simlock, bins: SimlockBins): Promise<void> {
   try {
-    await warmUpSteps(simlock, agentDevice);
+    await warmUpSteps(simlock, bins);
   } finally {
     if (state.platform === "ios") {
+      await reportRunnerCache(bins, "after the self-test");
       const decisions = await runnerCacheDecisions().catch(() => []);
-      if (decisions.length === 0) info("Apple runner cache: agent-device logged no cache decision");
       for (const line of decisions) info(`Apple runner cache decision: ${line}`);
     }
     await simlock.timeline().catch((err) => warn(`no warm-up timeline: ${message(err)}`));
   }
 }
 
-async function warmUpSteps(simlock: Simlock, agentDevice: string): Promise<void> {
+/**
+ * Each cached Apple runner build, checked with agent-device's own validator:
+ * a restored build that is refused, or a new build whose key differs, says
+ * why the self-test rebuilt the runner.
+ */
+async function reportRunnerCache(bins: SimlockBins, when: string): Promise<void> {
+  try {
+    const lines = await runnerCacheReport(await loadRunnerCacheValidator(bins.agentDeviceRoot));
+    if (lines.length === 0) info(`Apple runner cache ${when}: no build on disk`);
+    for (const line of lines) info(`Apple runner cache ${when}: ${line}`);
+  } catch (err) {
+    warn(`Apple runner cache ${when}: not checked (${message(err)})`);
+  }
+}
+
+async function warmUpSteps(simlock: Simlock, bins: SimlockBins): Promise<void> {
+  const agentDevice = bins.agentDevice;
   const timeoutMs = WARM_TIMEOUT_MS[state.platform];
   const stopping = () => state.shuttingDown;
   await simlock.waitForWarm({ timeoutMs, isStopping: stopping });
@@ -587,6 +606,7 @@ async function warmUpSteps(simlock: Simlock, agentDevice: string): Promise<void>
         ? `Apple runner: ${builds} cached build(s) restored; agent-device reuses a matching one`
         : "Apple runner: no cached build; the self-test builds it",
     );
+    await reportRunnerCache(bins, "before the self-test");
   }
   for (let attempt = 1; ; attempt++) {
     const started = Date.now();
@@ -709,7 +729,7 @@ async function main(): Promise<void> {
   // 6. Warm the device (and on iOS build XCTest) before anyone can reach it:
   // a client's first call then never waits on a cold boot.
   try {
-    await warmUp(simlock, bins.agentDevice);
+    await warmUp(simlock, bins);
   } catch (err) {
     const reason = `${state.platform === "ios" ? "iOS simulator" : "Android emulator"} did not warm up: ${message(err)}`;
     error(reason.slice(0, 500));

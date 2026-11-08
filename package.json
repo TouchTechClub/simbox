@@ -20,7 +20,7 @@
   "scripts": {
     "test": "bun test tests",
     "test:preview-worker": "node scripts/verify-preview-worker.cjs",
-    "typecheck": "for d in packages/shared packages/db packages/agent apps/api apps/cli apps/web; do echo \"── $d\"; (bun run --cwd $d typecheck) || exit 1; done",
+    "typecheck": "for d in packages/shared packages/db packages/agent apps/api apps/cli apps/web packages/infra; do echo \"── $d\"; (bun run --cwd $d typecheck) || exit 1; done",
     "check": "oxlint && oxfmt --check",
     "check:fix": "oxlint --fix && oxfmt --write",
     "db:generate": "bun run --cwd packages/db db:generate",

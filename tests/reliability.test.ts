@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   cachedRunnerBuilds,
   runnerCacheDecisions,
+  runnerCacheReport,
   formatTimeline,
   iosSlim,
   KEEP_RECLAIM_ENV,
@@ -14,6 +15,7 @@ import {
   SIMLOCK_PATCHES,
   simlockLoad,
   simlockSettings,
+  UNTIMED_FETCH_INIT,
   warmReady,
 } from "../packages/agent/src/simlock.js";
 import { hostMismatch, hostPlatform } from "../packages/agent/src/platform.js";
@@ -99,6 +101,7 @@ test("Simlock warms only the run's target and caps leases at the run's devices",
       target: { platform: "ios", model: "iPhone 17", count: 1 },
       maxDevices: 3,
       osVersion: "26.5",
+      env: { SIMBOX_IOS_SLIM: "1" },
     }),
   );
   expect(ios["warmPool.targets"]).toBe('[{"platform":"ios","model":"iPhone 17","count":1}]');
@@ -122,15 +125,25 @@ test("Simlock warms only the run's target and caps leases at the run's devices",
   expect(android["android.emulator.headless"]).toBe("true");
   expect(android["downloads.acceptAndroidLicenses"]).toBe("true");
   expect(android["ios.defaultMode"]).toBeUndefined();
-  // Slim needs iOS 18.5; older runtimes keep Simlock's default full mode.
-  expect(iosSlim("18.5")).toBe(true);
-  expect(iosSlim("18.4")).toBe(false);
+  // Slim is opt-in and needs iOS 18.5; otherwise Simlock boots full.
+  const on = { SIMBOX_IOS_SLIM: "1" };
+  expect(iosSlim("18.5", on)).toBe(true);
+  expect(iosSlim("18.4", on)).toBe(false);
+  expect(iosSlim("27.2", {})).toBe(false);
   const old = simlockSettings({
     target: { platform: "ios", model: "iPhone 16", count: 1 },
     maxDevices: 1,
     osVersion: "18.4",
+    env: on,
   });
   expect(Object.fromEntries(old)["ios.defaultMode"]).toBeUndefined();
+  const full = simlockSettings({
+    target: { platform: "ios", model: "iPhone 17e", count: 1 },
+    maxDevices: 1,
+    osVersion: "27.2",
+    env: {},
+  });
+  expect(Object.fromEntries(full)["ios.defaultMode"]).toBeUndefined();
 });
 
 test("Simlock timeout patches are exact and idempotent", () => {
@@ -264,6 +277,65 @@ test("cached Apple runner builds are counted by agent-device's metadata file", a
     writeFileSync(join(derived, "ios-simulator", build, ".agent-device-runner-cache.json"), "{}");
   }
   expect(await cachedRunnerBuilds(derived)).toBe(2);
+});
+
+test("Simlock forwards agent-device calls with no undici timeouts", () => {
+  const patch = SIMLOCK_PATCHES.find((p) => p.file === "agent-device/host/upstream.js");
+  expect(patch?.to).toContain(UNTIMED_FETCH_INIT);
+  const init = () => new Function(`return ${UNTIMED_FETCH_INIT};`)() as unknown;
+  const key = Symbol.for("undici.globalDispatcher.1");
+  const g = globalThis as unknown as Record<symbol | string, unknown>;
+  const saved = g[key];
+  try {
+    delete g[key];
+    delete g.__simboxUntimedDispatcher;
+    // Before the first fetch there is no dispatcher to copy: plain fetch.
+    expect(init()).toBeUndefined();
+    class Agent {
+      constructor(readonly options: unknown) {}
+    }
+    g[key] = new Agent({});
+    const first = init() as { dispatcher: Agent };
+    expect(first.dispatcher.options).toEqual({ headersTimeout: 0, bodyTimeout: 0 });
+    expect((init() as { dispatcher: Agent }).dispatcher).toBe(first.dispatcher);
+  } finally {
+    delete g.__simboxUntimedDispatcher;
+    if (saved === undefined) delete g[key];
+    else g[key] = saved;
+  }
+});
+
+test("the runner cache report says whether each build is reusable and what its key changed", async () => {
+  const derived = mkdtempSync(join(tmpdir(), "simbox-derived-"));
+  const write = (dir: string, metadata: object) => {
+    mkdirSync(join(derived, "ios-simulator", dir), { recursive: true });
+    writeFileSync(
+      join(derived, "ios-simulator", dir, ".agent-device-runner-cache.json"),
+      JSON.stringify(metadata),
+    );
+  };
+  const toolchain = { xcodeVersion: "27.0", sdkVersion: "27.0" };
+  write("cache-a", { schemaVersion: 3, packageVersion: "0.21.35", toolchain, artifacts: { a: 1 } });
+  write("cache-b", {
+    schemaVersion: 3,
+    packageVersion: "0.21.35",
+    toolchain: { ...toolchain, xcodeVersion: "27.1" },
+    artifacts: { b: 1 },
+  });
+  const seen: string[] = [];
+  const lines = await runnerCacheReport((dir) => {
+    seen.push(dir);
+    return dir.endsWith("cache-a")
+      ? { ok: false, mismatch: { path: "Build/x", reason: "mode_changed" } }
+      : { ok: true };
+  }, derived);
+  expect(seen).toHaveLength(2);
+  expect(lines[0]).toContain("cache-a (agent-device 0.21.35): files refused");
+  expect(lines[0]).toContain("mode_changed");
+  expect(lines[0]).toContain('key {"schemaVersion":3,"toolchain":{"xcodeVersion":"27.0"');
+  expect(lines[0]).not.toContain("artifacts");
+  expect(lines[1]).toContain('files intact; key differs: toolchain.xcodeVersion: "27.0" -> "27.1"');
+  expect(await runnerCacheReport(() => ({ ok: true }), join(derived, "missing"))).toEqual([]);
 });
 
 test("runner cache decisions are read from agent-device diagnostics, oldest first", async () => {

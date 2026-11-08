@@ -7,7 +7,7 @@
 import { chmod, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { compareVersions, type DevicePlatform } from "@simbox/shared";
 import { PINS } from "./pins.js";
 import { endGroup, info, relay, startGroup, warn } from "./log.js";
@@ -16,6 +16,8 @@ import { relayFiltered, run, which } from "./proc.js";
 export interface SimlockBins {
   simlock: string;
   agentDevice: string;
+  /** The installed agent-device package, for its runner cache validator. */
+  agentDeviceRoot: string;
 }
 
 /** One warm-pool target: Simlock keeps `count` such devices booted and unleased. */
@@ -81,6 +83,7 @@ export async function installSimlock(): Promise<SimlockBins> {
     const bins = {
       simlock: await globalBin("simlock", prefix),
       agentDevice: await globalBin("agent-device", prefix),
+      agentDeviceRoot: join(root, "agent-device"),
     };
     info(`simlock at ${bins.simlock}; agent-device at ${bins.agentDevice}`);
     return bins;
@@ -115,6 +118,16 @@ export function defaultDeviceEnv(target: WarmTarget, osVersion: string): Record<
   return { [DEFAULT_MODEL_ENV]: target.model, [DEFAULT_OS_ENV]: target.osVersion ?? osVersion };
 }
 
+/**
+ * A `fetch` init with no undici headers or body timeout, built from the
+ * process's own global dispatcher (Node bundles undici but does not export it).
+ * Without it, the default 300s body timeout cut Simlock's stream from the
+ * agent-device daemon while the first Apple runner build sat silent, and the
+ * CLI saw "Daemon RPC request failed" after about 340s.
+ */
+export const UNTIMED_FETCH_INIT =
+  '(() => { try { const agent = globalThis[Symbol.for("undici.globalDispatcher.1")]; if (agent === undefined) return undefined; globalThis.__simboxUntimedDispatcher ??= new agent.constructor({ headersTimeout: 0, bodyTimeout: 0 }); return { dispatcher: globalThis.__simboxUntimedDispatcher }; } catch { return undefined; } })()';
+
 /** How long an agent-device lease survives without a command. */
 export const AGENT_DEVICE_LEASE_TTL_MS = 30 * 60_000;
 
@@ -139,6 +152,9 @@ export const AGENT_DEVICE_LEASE_TTL_MS = 30 * 60_000;
  *   an iPhone Duo) before the run could go live. While the keep file exists,
  *   the next reclaim consumes it and returns the device booted and ready, the
  *   way Simlock's own Android snapshot reclaim does. See `keepReclaimFile`.
+ * - Simlock forwards agent-device calls with Node's `fetch`, whose undici
+ *   timeouts end a response that is silent for 300s: a first runner build is.
+ *   See `UNTIMED_FETCH_INIT`.
  */
 export const SIMLOCK_PATCHES: Array<{ file: string; from: string; to: string }> = [
   {
@@ -188,6 +204,11 @@ export const SIMLOCK_PATCHES: Array<{ file: string; from: string; to: string }> 
       `...(device === undefined && klass === undefined && process.env.${DEFAULT_MODEL_ENV} ? { model: process.env.${DEFAULT_MODEL_ENV}, ...(process.env.${DEFAULT_OS_ENV} ? { osVersion: process.env.${DEFAULT_OS_ENV} } : {}) } : ` +
       "device === undefined ? (klass === undefined ? {} : { class: klass }) : { model: device }),",
   },
+  {
+    file: "agent-device/host/upstream.js",
+    from: "return globalThis.fetch(request);",
+    to: `return globalThis.fetch(request, ${UNTIMED_FETCH_INIT});`,
+  },
 ];
 
 export function patchSource(source: string, from: string, to: string): string {
@@ -202,13 +223,23 @@ async function patchSimlock(dist: string): Promise<void> {
     await writeFile(path, patchSource(await readFile(path, "utf8"), from, to));
   }
   info(
-    `patched Simlock: iOS timeouts, agent-device lease TTL, devices and default model, self-test keep (${SIMLOCK_PATCHES.length} edits)`,
+    `patched Simlock: iOS timeouts, agent-device lease TTL and fetch timeouts, devices and default model, self-test keep (${SIMLOCK_PATCHES.length} edits)`,
   );
 }
 
-/** Simlock's slim mode applies from iOS 18.5; older runtimes always boot full. */
-export function iosSlim(osVersion: string): boolean {
-  return compareVersions(osVersion, "18.5") >= 0;
+/**
+ * Turns Simlock's iOS slim mode on (`1`). Off by default: slim boots a fresh
+ * device, disables its background services, shuts it down and boots it again,
+ * and the warm device is always fresh, so the run paid for two boots.
+ */
+export const IOS_SLIM_ENV = "SIMBOX_IOS_SLIM";
+
+/** Slim mode applies from iOS 18.5 and only when asked for (see IOS_SLIM_ENV). */
+export function iosSlim(
+  osVersion: string,
+  env: Record<string, string | undefined> = Bun.env,
+): boolean {
+  return env[IOS_SLIM_ENV] === "1" && compareVersions(osVersion, "18.5") >= 0;
 }
 
 /** Every `simlock config set` the run needs, in order. */
@@ -217,6 +248,8 @@ export function simlockSettings(options: {
   maxDevices: number;
   /** The chosen OS version; decides iOS slim mode. */
   osVersion: string;
+  /** Read for IOS_SLIM_ENV. */
+  env?: Record<string, string | undefined>;
 }): Array<[string, string]> {
   const { target } = options;
   const settings: Array<[string, string]> = [
@@ -239,7 +272,7 @@ export function simlockSettings(options: {
   ];
   // Slim turns off iOS background services (Siri, search, iCloud sync, widgets
   // and so on) and boots under its own, configurable limit.
-  if (target.platform === "ios" && iosSlim(options.osVersion))
+  if (target.platform === "ios" && iosSlim(options.osVersion, options.env))
     settings.push(["ios.defaultMode", "slim"], ["ios.slim.bootTimeoutMs", "600000"]);
   if (target.platform === "android")
     settings.push(
@@ -287,6 +320,95 @@ export function appleRunnerDerived(home = Bun.env.HOME || homedir()): string {
 export async function cachedRunnerBuilds(derived = appleRunnerDerived()): Promise<number> {
   const entries = await readdir(derived, { recursive: true }).catch(() => [] as string[]);
   return entries.filter((entry) => basename(entry) === ".agent-device-runner-cache.json").length;
+}
+
+const RUNNER_CACHE_METADATA = ".agent-device-runner-cache.json";
+
+type RunnerCacheValidator = (
+  derived: string,
+  metadata: unknown,
+) => { ok: boolean; mismatch?: unknown };
+
+/** agent-device's own check that a cached runner build is reusable as it is on disk. */
+export async function loadRunnerCacheValidator(
+  agentDeviceRoot: string,
+): Promise<RunnerCacheValidator> {
+  const mod = (await import(
+    join(agentDeviceRoot, "dist", "src", "runner-artifact-manifest.js")
+  )) as {
+    validateRunnerCacheArtifactManifest: RunnerCacheValidator;
+  };
+  return mod.validateRunnerCacheArtifactManifest;
+}
+
+/** `{a:{b:1}}` as `{"a.b":"1"}`, for naming what differs between two cache keys. */
+function flatten(
+  value: unknown,
+  prefix = "",
+  out: Record<string, string> = {},
+): Record<string, string> {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    for (const [key, child] of Object.entries(value))
+      flatten(child, prefix ? `${prefix}.${key}` : key, out);
+  } else out[prefix] = JSON.stringify(value);
+  return out;
+}
+
+/**
+ * One line per cached runner build: whether agent-device would accept its
+ * files as they are on disk, and its cache key (the metadata minus the file
+ * manifest). Later builds list only the key fields that differ from the
+ * first, so a rebuild beside a restored build names what changed.
+ */
+export async function runnerCacheReport(
+  validate: RunnerCacheValidator,
+  derived = appleRunnerDerived(),
+): Promise<string[]> {
+  const entries = await readdir(derived, { recursive: true }).catch(() => [] as string[]);
+  const lines: string[] = [];
+  let first: Record<string, string> | undefined;
+  for (const entry of entries.filter((e) => basename(e) === RUNNER_CACHE_METADATA).sort()) {
+    const dir = join(derived, dirname(entry));
+    let metadata: Record<string, unknown>;
+    try {
+      metadata = JSON.parse(await readFile(join(derived, entry), "utf8")) as Record<
+        string,
+        unknown
+      >;
+    } catch (err) {
+      lines.push(`${dirname(entry)}: unreadable metadata (${String(err)})`);
+      continue;
+    }
+    let files: string;
+    try {
+      const result = validate(dir, metadata);
+      files = result.ok
+        ? "files intact"
+        : `files refused ${JSON.stringify(result.mismatch ?? null)}`;
+    } catch (err) {
+      files = `validator threw ${String(err)}`;
+    }
+    const { artifacts: _artifacts, packageVersion, ...key } = metadata;
+    const flat = flatten(key);
+    let keyText: string;
+    if (first === undefined) {
+      first = flat;
+      keyText = `key ${JSON.stringify(key)}`;
+    } else {
+      const base = first;
+      const differs = [...new Set([...Object.keys(base), ...Object.keys(flat)])]
+        .filter((path) => base[path] !== flat[path])
+        .map((path) => `${path}: ${base[path] ?? "(none)"} -> ${flat[path] ?? "(none)"}`);
+      keyText = differs.length ? `key differs: ${differs.join("; ")}` : "same key as the first";
+    }
+    lines.push(
+      `${dirname(entry)} (agent-device ${String(packageVersion)}): ${files}; ${keyText}`.slice(
+        0,
+        2000,
+      ),
+    );
+  }
+  return lines;
 }
 
 /**

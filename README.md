@@ -74,9 +74,10 @@ time out and the tunnel drops. So Simbox counts a run as full at one device per
 JSON `--runner` to override, for example
 `--runner '{"labels":["blacksmith-12vcpu-macos-latest"],"maxDevices":2}'`. The runner also turns off host Spotlight
 indexing and raises cloudflared's priority. A device that does not warm, or a
-failed self-test, fails the run. iOS 18.5 and later simulators run in Simlock's slim
-mode, which turns off background services an app test rarely needs (Siri,
-search, iCloud sync, widgets and similar). The runner also raises Simlock's
+failed self-test, fails the run. iOS simulators boot in full mode. Set
+`SIMBOX_IOS_SLIM=1` on the job to use Simlock's slim mode on iOS 18.5 and later
+instead: it turns off background services an app test rarely needs (Siri,
+search, iCloud sync, widgets and similar), but it boots each new device twice. The runner also raises Simlock's
 fixed iOS boot and `simctl` timeouts, which hosted Macs cannot meet. These
 patches (`SIMLOCK_PATCHES`) must match the pinned Simlock exactly, so a bump
 that moves one fails the run rather than silently dropping it. Android runs on Linux and never waits for iOS. iOS runs

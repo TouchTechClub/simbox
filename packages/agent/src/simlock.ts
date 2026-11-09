@@ -482,6 +482,23 @@ export function createSimlock(bins: SimlockBins) {
     status,
     logs,
 
+    /** Why the last status read failed; empty after a good read. */
+    statusProblem: () => statusProblem,
+
+    /**
+     * Whether the daemon answers its health route within `timeoutMs`. A host
+     * busy wiping and re-warming a device can make `simlock status` outlast
+     * its limit while the daemon is fine; restarting it then lost the run.
+     */
+    async alive(timeoutMs = 60_000): Promise<boolean> {
+      try {
+        const res = await fetch(SIMLOCK_HEALTH_URL, { signal: AbortSignal.timeout(timeoutMs) });
+        return res.ok;
+      } catch {
+        return false;
+      }
+    },
+
     async configure(options: Parameters<typeof simlockSettings>[0]): Promise<void> {
       for (const [key, value] of simlockSettings(options)) {
         const res = await simlock(["config", "set", key, value]);
@@ -526,7 +543,7 @@ export function createSimlock(bins: SimlockBins) {
     },
 
     async stop(): Promise<void> {
-      await simlock(["daemon", "stop"], 20_000);
+      await simlock(["daemon", "stop"], 90_000);
     },
 
     /**
@@ -589,6 +606,9 @@ export type Simlock = ReturnType<typeof createSimlock>;
 export function simlockLoad(status: SimlockStatus): { leases: number; queued: number } {
   return { leases: status.leases?.length ?? 0, queued: status.queueDepth ?? 0 };
 }
+
+/** Simlock's anonymous liveness route on the run's daemon. */
+export const SIMLOCK_HEALTH_URL = "http://127.0.0.1:4701/v1/healthz";
 
 /** Warm devices ready to lease right now. */
 export function warmReady(status: SimlockStatus): number {

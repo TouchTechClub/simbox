@@ -490,12 +490,18 @@ async function restartDaemon(): Promise<string | null> {
   warn(`Simlock daemon is not answering; restarting it (${used + 1}/${DAEMON_RESTART_LIMIT})`);
   await state.simlock!.logs();
   await state.simlock!.stop().catch(() => {});
-  try {
-    await state.simlock!.start();
-  } catch (err) {
-    return `Simlock daemon restart failed: ${message(err).slice(0, 150)}`;
+  // A start right after a slow stop can still find the old daemon going away
+  // ("Daemon connection closed"), so it gets one more try.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await state.simlock!.start();
+      return null;
+    } catch (err) {
+      if (attempt >= 2) return `Simlock daemon restart failed: ${message(err).slice(0, 150)}`;
+      warn(`Simlock daemon start failed (${message(err).slice(0, 150)}); retrying`);
+      await interruptibleSleep(15_000);
+    }
   }
-  return null;
 }
 
 async function checkHardExit(): Promise<void> {
@@ -529,13 +535,19 @@ async function supervise(): Promise<never> {
     const status = await state.simlock!.status();
     if (!status) {
       daemonProbeFailures += 1;
-      warn(`simlock status failed (${daemonProbeFailures}/${DAEMON_PROBE_FAILURE_LIMIT})`);
+      warn(
+        `simlock status failed (${daemonProbeFailures}/${DAEMON_PROBE_FAILURE_LIMIT}): ${state.simlock!.statusProblem()}`,
+      );
       // Unknown load is not evidence of idleness.
       lastWorkAt = Date.now();
       if (daemonProbeFailures >= DAEMON_PROBE_FAILURE_LIMIT) {
         daemonProbeFailures = 0;
-        const failure = await restartDaemon();
-        if (failure) await shutdown(failure, 1);
+        if (await state.simlock!.alive()) {
+          warn("Simlock is slow but answers its health check; not restarting it");
+        } else {
+          const failure = await restartDaemon();
+          if (failure) await shutdown(failure, 1);
+        }
       }
     } else {
       daemonProbeFailures = 0;
